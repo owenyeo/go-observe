@@ -9,7 +9,7 @@ definitions. Read `README.md` and the examples before changing its public API.
   handlers/workers. There is no global singleton or central SDK server.
 - Reuse an existing Prometheus registry or tracer provider when supplied. Do not
   replace global providers, install collectors, or publish Grafana assets at startup.
-- Register custom business metrics through `Telemetry.Registerer`. Prefer existing
+- Register custom business metrics through `Telemetry.Registerer()`. Prefer existing
   metrics over a duplicate family. Counters count events; histograms use seconds.
 - Declare a finite HTTP route catalogue. Use route templates, never raw paths.
 - Use `httpmetrics.MarkFailed(ctx)` for explicit business failure. Do not inspect
@@ -21,6 +21,9 @@ definitions. Read `README.md` and the examples before changing its public API.
   a message field. Applications choose the log sink and metrics listener/auth.
 - Optional trace failures must leave the application serving. Export queues are
   bounded; preserve caller ownership when shutting providers down.
+- Supply Registerer/Gatherer together, backed by the same registry. Reserve
+  service_name/environment labels for the SDK's wrapper. AccessLogs is opt-in;
+  tracing requires an explicit sample-ratio pointer and respects trusted parents.
 
 ## Define SLOs
 
@@ -78,6 +81,7 @@ definitions. Read `README.md` and the examples before changing its public API.
 - Go definitions live with the service; `observability/VERSION` versions monitoring
   separately from the application. Pin the SDK revision and Go dependencies.
 - Read `.go-version` for the tested Go toolchain and `go.mod` for library pins.
+  Read `.github/tools.env` for formatter and vulnerability-checker pins.
   Read `examples/local/compose.yml` for Grafana/Prometheus versions; invoke
   `promtool` through that Compose service instead of repeating an image version.
   Keep stable OpenTelemetry modules aligned. Validate pin changes with all three
@@ -88,6 +92,9 @@ definitions. Read `README.md` and the examples before changing its public API.
   in their configured folder. Ownership collisions must fail before writes.
 - Promote the tested, immutable release artifact to production. A second version
   bump is not required for promotion. Roll back by applying a prior artifact.
+- Build the publisher and definitions from the consuming module's dependency
+  graph. Do not choose a separate SDK ref for publishing. Use observe normalize
+  to format a rendered bundle; rendering belongs to the Go definition program.
 - Publication is not transactional across resources: report partial failures and
   rerun or roll back. Do not silently claim atomic or exactly-once deployment.
 - Stay within the user's requested local/remote scope. A local implementation
@@ -97,10 +104,15 @@ definitions. Read `README.md` and the examples before changing its public API.
 
 ```sh
 export GOTOOLCHAIN="go$(cat .go-version)"
+. .github/tools.env
+go install "golang.org/x/tools/cmd/goimports@$GOIMPORTS_VERSION"
+go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION"
 gofmt -l .
+goimports -l .
 go vet ./...
 go test -race ./...
-go run ./examples/monitoring -version "$(cat VERSION)" | go run ./cmd/observe validate -version-file VERSION
+govulncheck ./...
+go run ./examples/monitoring -version "$(cat examples/monitoring/VERSION)" | go run ./cmd/observe validate -version-file examples/monitoring/VERSION
 go run ./examples/promql-check -out artifacts/promql-test.json
 docker compose -p go-observe-preview -f examples/local/compose.yml run --rm --no-deps -T \
   -v "$PWD/artifacts:/checks:ro" --entrypoint /bin/promtool prometheus test rules /checks/promql-test.json

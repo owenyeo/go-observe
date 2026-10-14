@@ -1,4 +1,4 @@
-// Package cli is the testable entry point for the CI tool. Rendering consumes the
+// Package cli is the testable entry point for the CI tool. Normalization consumes the
 // JSON emitted by a Go definition program; definitions are never evaluated from JSON.
 package cli
 
@@ -21,13 +21,13 @@ import (
 // caller explicitly asks for network access with diff or apply.
 func Run(ctx context.Context, args []string, input io.Reader, output io.Writer, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: observe render|validate|diff|apply|version-check")
+		return errors.New("usage: observe normalize|validate|diff|apply|version-check")
 	}
 	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	bundlePath := flags.String("bundle", "-", "bundle JSON file, or - for stdin")
-	out := flags.String("out", "-", "render output file, or - for stdout")
+	out := flags.String("out", "-", "normalized output file, or - for stdout")
 	insecure := flags.Bool("allow-insecure", false, "allow HTTP only for a trusted local/private Grafana")
 	versionFile := flags.String("version-file", "", "require the bundle version to match this file")
 	previous := flags.String("previous", "", "previous MAJOR.MINOR.PATCH version")
@@ -41,7 +41,7 @@ func Run(ctx context.Context, args []string, input io.Reader, output io.Writer, 
 	if command == "version-check" {
 		return versionCheck(*previous, *current)
 	}
-	if command != "render" && command != "validate" && command != "diff" && command != "apply" {
+	if command != "normalize" && command != "validate" && command != "diff" && command != "apply" {
 		return errors.New("unknown command")
 	}
 	if *bundlePath != "-" {
@@ -69,7 +69,7 @@ func Run(ctx context.Context, args []string, input io.Reader, output io.Writer, 
 	case "validate":
 		_, err := fmt.Fprintf(output, "Valid %s / %s monitoring %s: %d dashboards, %d alerts\n", bundle.Service, bundle.Target.Environment, bundle.Version, len(bundle.Dashboards), len(bundle.Alerts))
 		return err
-	case "render":
+	case "normalize":
 		if *out != "-" {
 			if err := os.MkdirAll(filepath.Dir(*out), 0755); err != nil {
 				return err

@@ -6,14 +6,6 @@ on:
         description: release renders both targets and publishes staging; promote reuses that successful release artifact
         required: true
         type: string
-      sdk-repository:
-        description: Repository hosting this SDK
-        required: true
-        type: string
-      sdk-ref:
-        description: Immutable SDK commit SHA
-        required: true
-        type: string
       source-ref:
         description: Immutable service commit SHA
         required: true
@@ -23,7 +15,12 @@ on:
         default: ''
         type: string
       definition-package:
+        description: Definition package relative to module-directory
         default: ./observability
+        type: string
+      module-directory:
+        description: Service Go module directory relative to its repository
+        default: .
         type: string
       version-file:
         default: observability/VERSION
@@ -41,6 +38,9 @@ on:
     secrets:
       GRAFANA_TOKEN:
         required: true
+      MODULE_READ_TOKEN:
+        description: Optional token with read access to private Go dependencies
+        required: false
 permissions:
   contents: read
   actions: read
@@ -53,49 +53,82 @@ jobs:
       cancel-in-progress: false
     env:
       MODE: ${{ inputs.mode }}
-      SDK_REF: ${{ inputs.sdk-ref }}
       SOURCE_REF: ${{ inputs.source-ref }}
+      MODULE_DIRECTORY: ${{ inputs.module-directory }}
       PREVIOUS_REF: ${{ inputs.previous-ref }}
       DEFINITION_PACKAGE: ${{ inputs.definition-package }}
       VERSION_FILE: ${{ inputs.version-file }}
       STAGING_ENV: ${{ inputs.staging-environment }}
       PRODUCTION_ENV: ${{ inputs.production-environment }}
       RELEASE_RUN_ID: ${{ inputs.release-run-id }}
+      GOWORK: 'off'
+      GOFLAGS: '-mod=readonly'
     steps:
       - name: Validate workflow inputs
         shell: sh
         run: |
           set -eu
           case "$MODE" in release|promote) ;; *) exit 1 ;; esac
-          printf '%s\n' "$SDK_REF" "$SOURCE_REF" | awk 'length != 40 || /[^0-9a-f]/ { bad=1 } END { exit bad }'
+          printf '%s\n' "$SOURCE_REF" | awk 'length != 40 || /[^0-9a-f]/ { bad=1 } END { exit bad }'
           printf '%s\n' "$STAGING_ENV" "$PRODUCTION_ENV" | awk '!/^[a-z][a-z0-9-]*$/ { bad=1 } END { exit bad }'
           test "$STAGING_ENV" != "$PRODUCTION_ENV"
           case "$DEFINITION_PACKAGE" in ./*) ;; *) exit 1 ;; esac
+          case "$DEFINITION_PACKAGE" in *..*) exit 1 ;; esac
+          case "$MODULE_DIRECTORY" in ''|/*|*..*) exit 1 ;; esac
           case "$VERSION_FILE" in /*|*..*) exit 1 ;; esac
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: ${{ inputs.sdk-repository }}
-          ref: ${{ inputs.sdk-ref }}
-          path: sdk
-          persist-credentials: false
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: sdk/.go-version
-          cache-dependency-path: sdk/go.sum
-      - name: Build pinned publication tool
-        working-directory: sdk
-        run: go build -o "$RUNNER_TEMP/observe" ./cmd/observe
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        if: inputs.mode == 'release'
         with:
           ref: ${{ inputs.source-ref }}
           path: service
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: service/${{ inputs.module-directory }}/go.mod
+          cache-dependency-path: service/${{ inputs.module-directory }}/go.sum
+      - name: Configure optional private module access
+        shell: sh
+        env:
+          MODULE_READ_TOKEN: ${{ secrets.MODULE_READ_TOKEN }}
+        run: |
+          set -eu
+          if [ -n "$MODULE_READ_TOKEN" ]; then
+            # Git reads the token from this job's environment, not a file or URL.
+            # shellcheck disable=SC2016
+            git config --global credential.https://github.com.helper '!f() { printf "username=x-access-token\npassword=%s\n" "$MODULE_READ_TOKEN"; }; f'
+            printf '%s\n' 'GOPRIVATE=github.com/owenyeo/*' >> "$GITHUB_ENV"
+          fi
+      - name: Build publisher from the service's pinned SDK
+        working-directory: service/${{ inputs.module-directory }}
+        shell: sh
+        env:
+          MODULE_READ_TOKEN: ${{ secrets.MODULE_READ_TOKEN }}
+        run: |
+          set -eu
+          # Both the definition program and publisher use this go.mod/go.sum.
+          # Reject local SDK replacements: promotion must resolve an immutable version.
+          test "$(go env GOMOD)" = "$PWD/go.mod"
+          go list -m -json github.com/owenyeo/go-observe > "$RUNNER_TEMP/sdk-module.json"
+          jq -e '.Main != true and .Replace == null and (.Version | startswith("v"))' "$RUNNER_TEMP/sdk-module.json" > /dev/null
+          # go list alone may only fetch go.mod on a cold runner. Download the
+          # pinned source before reading its toolchain file and checksum.
+          go mod download github.com/owenyeo/go-observe
+          go list -m -json github.com/owenyeo/go-observe > "$RUNNER_TEMP/sdk-module.json"
+          jq -e '.Sum | startswith("h1:")' "$RUNNER_TEMP/sdk-module.json" > /dev/null
+          jq -S '{Path, Version, Sum}' "$RUNNER_TEMP/sdk-module.json" > "$RUNNER_TEMP/sdk-identity.json"
+          sdk_directory="$(jq -r '.Dir' "$RUNNER_TEMP/sdk-module.json")"
+          sdk_go_version="$(cat "$sdk_directory/.go-version")"
+          printf '%s\n' "$sdk_go_version" | awk '!/^[0-9]+\.[0-9]+\.[0-9]+$/ { bad=1 } END { exit bad }'
+          export GOTOOLCHAIN="go$sdk_go_version"
+          printf 'GOTOOLCHAIN=%s\n' "$GOTOOLCHAIN" >> "$GITHUB_ENV"
+          go build -o "$RUNNER_TEMP/observe" github.com/owenyeo/go-observe/cmd/observe
+          git diff --exit-code -- go.mod go.sum
       - name: Require a version bump and render both reviewed destinations
         if: inputs.mode == 'release'
         working-directory: service
         shell: sh
+        env:
+          MODULE_READ_TOKEN: ${{ secrets.MODULE_READ_TOKEN }}
         run: |
           set -eu
           printf '%s\n' "$PREVIOUS_REF" | awk 'length != 40 || /[^0-9a-f]/ { bad=1 } END { exit bad }'
@@ -107,15 +140,19 @@ jobs:
           fi
           current="$(cat "$VERSION_FILE")"
           "$RUNNER_TEMP/observe" version-check -previous "$previous" -current "$current"
+          repository="$PWD"
           mkdir -p ../bundles
-          go run "$DEFINITION_PACKAGE" -environment "$STAGING_ENV" -version "$current" > "../bundles/$STAGING_ENV.json"
-          go run "$DEFINITION_PACKAGE" -environment "$PRODUCTION_ENV" -version "$current" > "../bundles/$PRODUCTION_ENV.json"
-          "$RUNNER_TEMP/observe" validate -bundle "../bundles/$STAGING_ENV.json" -version-file "$VERSION_FILE"
-          "$RUNNER_TEMP/observe" validate -bundle "../bundles/$PRODUCTION_ENV.json" -version-file "$VERSION_FILE"
-          printf '%s\n' "$SOURCE_REF" > ../bundles/source-sha
-          printf '%s\n' "$SDK_REF" > ../bundles/sdk-sha
-          cd ../bundles
-          sha256sum ./*.json source-sha sdk-sha > SHA256SUMS
+          bundles="$(cd ../bundles && pwd)"
+          cd "$MODULE_DIRECTORY"
+          go run "$DEFINITION_PACKAGE" -environment "$STAGING_ENV" -version "$current" > "$bundles/$STAGING_ENV.json"
+          go run "$DEFINITION_PACKAGE" -environment "$PRODUCTION_ENV" -version "$current" > "$bundles/$PRODUCTION_ENV.json"
+          git diff --exit-code -- go.mod go.sum
+          "$RUNNER_TEMP/observe" validate -bundle "$bundles/$STAGING_ENV.json" -version-file "$repository/$VERSION_FILE"
+          "$RUNNER_TEMP/observe" validate -bundle "$bundles/$PRODUCTION_ENV.json" -version-file "$repository/$VERSION_FILE"
+          printf '%s\n' "$SOURCE_REF" > "$bundles/source-sha"
+          cp "$RUNNER_TEMP/sdk-identity.json" "$bundles/sdk-identity.json"
+          cd "$bundles"
+          sha256sum ./*.json source-sha > SHA256SUMS
       - name: Check promotion comes from a successful staging run
         if: inputs.mode == 'promote'
         shell: sh
@@ -140,7 +177,7 @@ jobs:
           set -eu
           sha256sum -c SHA256SUMS
           test "$(cat source-sha)" = "$SOURCE_REF"
-          test "$(cat sdk-sha)" = "$SDK_REF"
+          cmp sdk-identity.json "$RUNNER_TEMP/sdk-identity.json"
           target="$STAGING_ENV"
           if [ "$MODE" = promote ]; then target="$PRODUCTION_ENV"; fi
           jq -e --arg env "$target" '.target.environment == $env' "$target.json" > /dev/null

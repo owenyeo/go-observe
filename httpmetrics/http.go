@@ -30,7 +30,10 @@ type Config struct {
 	Route              func(*http.Request) string
 	Buckets            []float64
 	TrustIncomingTrace bool
-	Exclude            func(*http.Request) bool
+	// AccessLogs opts into one Info-level completion log per request; metrics and
+	// spans are recorded regardless of this setting.
+	AccessLogs bool
+	Exclude    func(*http.Request) bool
 }
 
 // Instrumentation holds collectors shared by all handlers in one process.
@@ -84,9 +87,9 @@ func New(t *telemetry.Telemetry, cfg Config) (*Instrumentation, error) {
 		inFlight: prometheus.NewGauge(prometheus.GaugeOpts{Name: "http_server_requests_in_flight", Help: "HTTP handlers currently running."})}
 	collectors := []prometheus.Collector{i.requests, i.duration, i.inFlight}
 	for index, collector := range collectors {
-		if err := t.Registerer.Register(collector); err != nil {
+		if err := t.Registerer().Register(collector); err != nil {
 			for _, registered := range collectors[:index] {
-				t.Registerer.Unregister(registered)
+				t.Registerer().Unregister(registered)
 			}
 			return nil, fmt.Errorf("register HTTP collector: %w", err)
 		}
@@ -169,7 +172,9 @@ func (i *Instrumentation) Middleware(next http.Handler) http.Handler {
 			if status >= 500 || outcome == "application_error" {
 				span.SetStatus(codes.Error, outcome)
 			}
-			i.telemetry.Logger(ctx).Info("HTTP request completed", "method", method, "route", route, "status", status, "outcome", outcome, "duration_ms", elapsed*1000)
+			if i.config.AccessLogs {
+				i.telemetry.Logger(ctx).Info("HTTP request completed", "method", method, "route", route, "status", status, "outcome", outcome, "duration_ms", elapsed*1000)
+			}
 			span.End()
 			if panicValue != nil {
 				panic(panicValue)

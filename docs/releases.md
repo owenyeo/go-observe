@@ -8,23 +8,32 @@ the service's normal build/deploy. Collector discovery is a separate prerequisit
 2. Render every target on PRs without publication credentials. Review the queries,
    ownership, routing, dashboard layout and generated asset diff.
 3. Bump `observability/VERSION`. On the main push, call the SDK's reusable
-   `.github/workflows/publish.yml` with `mode: release`, the exact source and SDK
-   commit SHAs, and the previous push SHA. It rejects unchanged/decreasing versions,
+   `.github/workflows/publish.yml` with `mode: release`, the exact service
+   commit SHA, and the previous push SHA. It rejects unchanged/decreasing versions,
    renders staging + production, publishes staging and retains both bundles with
    checksums and the pinned source/SDK identity for 30 days.
 4. After staging checks, call the same workflow with `mode: promote`, the same
-   source/SDK SHAs and the successful staging run ID. It downloads the production
+   source SHA and the successful staging run ID. It downloads the production
    bundle from that run instead of rebuilding. No second version bump is needed.
 5. For rollback, download the previous successful bundle and explicitly run
    `observe apply` with that environment's token. Changes are reconciled in place.
 
-The reusable workflow requires `sdk-repository`, `sdk-ref`, `source-ref`, `mode`
-and `GRAFANA_TOKEN`; release also requires `previous-ref`, promotion requires
-`release-run-id`. `definition-package`, `version-file` and both environment names
-are configurable. Host the SDK before referencing this workflow remotely.
-Both SDK workflows select Go from the checked-out SDK's `.go-version`. Library
-dependencies come from its `go.mod`/`go.sum`; monitoring versions belong to the
-service and do not have to match the SDK version.
+The reusable workflow requires `source-ref`, `mode` and `GRAFANA_TOKEN`; release
+also requires `previous-ref`, promotion requires `release-run-id`. Pin the workflow
+itself with `uses: owenyeo/go-observe/.github/workflows/publish.yml@<commit-sha>`.
+The renderer and publisher both use the consuming module's `go.mod` and `go.sum`,
+with workspace mode off and dependency updates disabled. SDK replacements are rejected.
+Promotion checks the recorded SDK module version/checksum and reuses the existing
+bundle; it does not rerender it. Monitoring versions remain independent of SDK versions.
+
+`module-directory` defaults to `.`; set it to `web` if the Go module is in `web/`.
+`definition-package` is relative to that module, while `version-file` is relative
+to the repository root. The initial compiler resolves the service's `go.mod`; both
+programs then run with the pinned SDK's tested `.go-version`.
+For private SDK access, callers need access to the private reusable workflow and
+may supply `MODULE_READ_TOKEN` with repository read permission for dependency fetches.
+Tokens are not stored in bundles or Git URLs. Other private module hosts require
+appropriate Go/Git configuration in the consuming project.
 
 Create staging/production GitHub environments with their own folder-scoped
 Grafana credentials. Set production reviewers using the project's existing

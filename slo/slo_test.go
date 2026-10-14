@@ -2,6 +2,7 @@ package slo
 
 import (
 	"math"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -36,17 +37,28 @@ func TestHistogramThresholdMustExistAndDoesNotMutateInput(t *testing.T) {
 	}
 }
 
-func TestLatencyUsesPrometheus3BucketLabels(t *testing.T) {
+func TestLatencySupportsBothIntegerBucketEncodings(t *testing.T) {
 	for _, test := range []struct {
 		threshold float64
-		label     string
-	}{{.2, "0.2"}, {1, "1.0"}, {2, "2.0"}, {10, "10.0"}, {1e-7, "1e-07"}} {
-		ratio, err := Latency(Selector{Metric: "duration_seconds"}, test.threshold, []float64{test.threshold})
+		labels    []string
+	}{{.2, []string{"0.2"}}, {1, []string{"1", "1.0"}}, {2, []string{"2", "2.0"}}, {10, []string{"10", "10.0"}}, {1e-7, []string{"1e-07"}}} {
+		histogram := Selector{Metric: "duration_seconds", Regex: map[string]string{"instance": ".*"}}
+		ratio, err := Latency(histogram, test.threshold, []float64{test.threshold})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ratio.Good.Labels["le"] != test.label {
-			t.Errorf("threshold %g: got %q, want %q", test.threshold, ratio.Good.Labels["le"], test.label)
+		if _, exists := histogram.Regex["le"]; exists {
+			t.Fatal("latency constructor mutated regex matchers")
+		}
+		for _, label := range test.labels {
+			if pattern, exists := ratio.Good.Regex["le"]; exists {
+				matcher := regexp.MustCompile("^(?:" + pattern + ")$")
+				if !matcher.MatchString(label) || matcher.MatchString(label+"0") {
+					t.Errorf("threshold %g did not select only equivalent bucket bounds", test.threshold)
+				}
+			} else if ratio.Good.Labels["le"] != label {
+				t.Errorf("threshold %g: got %q, want %q", test.threshold, ratio.Good.Labels["le"], label)
+			}
 		}
 	}
 }

@@ -18,7 +18,7 @@ func ExampleNew() {
 	defer instance.Shutdown(ctx)
 
 	completed := prometheus.NewCounter(prometheus.CounterOpts{Name: "orders_completed_total", Help: "Completed orders."})
-	if err := instance.Registerer.Register(completed); err != nil {
+	if err := instance.Registerer().Register(completed); err != nil {
 		panic(err)
 	}
 	completed.Inc()

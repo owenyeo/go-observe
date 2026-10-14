@@ -68,8 +68,7 @@ func main() {
 	add("replica drill-down preserves route braces and excludes other replicas", []any{
 		routeSeries("success", "busy", "0+99x400"), routeSeries("failure", "busy", "0+1x400"), routeSeries("failure", "quiet", "0+100x400"),
 	}, "round("+errorQuery+", 0.000001)", expected(.01))
-	// Match the bucket format stored by the pinned Prometheus 3 backend. Keep a
-	// real query check here: generating le="1" compiles but silently selects nothing.
+	// Run the same SLO query against legacy, normalized and mixed-replica buckets.
 	latency, err := slo.Latency(slo.Selector{Metric: "duration_seconds"}, 1, []float64{.2, 1, 2})
 	if err != nil {
 		fail(err)
@@ -82,6 +81,17 @@ func main() {
 		map[string]any{"series": "duration_seconds_count", "values": "0+100x400"},
 		map[string]any{"series": `duration_seconds_bucket{le="1.0"}`, "values": "0+99x400"},
 	}, latencyRatio, expected(.99))
+	add("one-second latency supports legacy bucket", []any{
+		map[string]any{"series": "duration_seconds_count", "values": "0+100x400"},
+		map[string]any{"series": `duration_seconds_bucket{le="1"}`, "values": "0+99x400"},
+	}, latencyRatio, expected(.99))
+	add("latency combines both bucket encodings across replicas", []any{
+		map[string]any{"series": `duration_seconds_count{instance="legacy"}`, "values": "0+100x400"},
+		map[string]any{"series": `duration_seconds_bucket{instance="legacy",le="1"}`, "values": "0+90x400"},
+		map[string]any{"series": `duration_seconds_count{instance="normalized"}`, "values": "0+300x400"},
+		map[string]any{"series": `duration_seconds_bucket{instance="normalized",le="1.0"}`, "values": "0+297x400"},
+	}, latencyRatio, expected(.9675))
+	add("missing latency telemetry stays absent", []any{}, latencyRatio, []any{})
 	content := map[string]any{"rule_files": []string{}, "evaluation_interval": "1m", "tests": tests}
 	if err := os.MkdirAll(filepath.Dir(*out), 0755); err != nil {
 		fail(err)

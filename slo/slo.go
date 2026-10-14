@@ -104,13 +104,18 @@ func Latency(histogram Selector, thresholdSeconds float64, buckets []float64) (R
 	for key, value := range histogram.Labels {
 		good.Labels[key] = value
 	}
-	// Prometheus 3 normalizes histogram bounds to OpenMetrics numbers on ingest.
-	// A whole-second bound is "1.0", not "1"; selecting the latter yields no data.
+	// Prometheus 3 normalizes integer bounds to "1.0"; older scrapers retain "1".
+	// Match both encodings so replicas using different scrapers contribute equally.
 	bound := strconv.FormatFloat(thresholdSeconds, 'g', -1, 64)
 	if !strings.ContainsAny(bound, ".e") {
-		bound += ".0"
+		good.Regex = make(map[string]string, len(histogram.Regex)+1)
+		for key, value := range histogram.Regex {
+			good.Regex[key] = value
+		}
+		good.Regex["le"] = regexp.QuoteMeta(bound) + `(\.0)?`
+	} else {
+		good.Labels["le"] = bound
 	}
-	good.Labels["le"] = bound
 	return Ratio{Total: total, Good: good}, nil
 }
 

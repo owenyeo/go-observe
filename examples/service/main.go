@@ -33,14 +33,14 @@ func run(logger *slog.Logger) error {
 	}
 	config := telemetry.Config{Service: "checkout", Environment: environment, Version: "example", Logger: logger}
 	if endpoint := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); endpoint != "" {
-		config.Trace = &telemetry.TraceConfig{Endpoint: endpoint, SampleRatio: .1}
+		config.Trace = &telemetry.TraceConfig{Endpoint: endpoint, SampleRatio: new(float64(.1))}
 	}
 	t, err := telemetry.New(ctx, config)
 	if err != nil {
 		return err
 	}
 	jobs := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "job_operations_total", Help: "Explicitly classified business operations."}, []string{"result"})
-	if err := t.Registerer.Register(jobs); err != nil {
+	if err := t.Registerer().Register(jobs); err != nil {
 		return err
 	}
 	jobs.WithLabelValues("success").Add(0)

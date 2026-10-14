@@ -13,10 +13,10 @@ from `go.mod`. The SDK is licensed under [MIT](LICENSE).
 
 | What is versioned | Source of truth |
 |---|---|
-| Go build/test toolchain | [`.go-version`](.go-version), read by both CI workflows |
+| Go build/test toolchain | [`.go-version`](.go-version), read by SDK CI |
 | Go libraries | [`go.mod`](go.mod) and `go.sum`; stable OpenTelemetry modules stay on the same release |
 | Grafana and Prometheus test servers | [`examples/local/compose.yml`](examples/local/compose.yml) |
-| SDK release | [`VERSION`](VERSION) |
+| SDK release | Git tag `vX.Y.Z`; [`VERSION`](VERSION) must agree |
 | A consuming service's monitoring release | That service's `observability/VERSION` |
 
 CI and local checks run `promtool` from the Compose Prometheus service, so its
@@ -25,8 +25,17 @@ run the Go, PromQL and local Grafana checks together. GitHub Actions remain pinn
 to reviewed commit SHAs. Passing this set does not establish compatibility with
 every older/newer backend version.
 
-Examples require `-version`; local examples use the SDK's `VERSION` for convenience.
-Real services pass their own monitoring version, independently of the SDK release.
+Examples require `-version` and use `examples/monitoring/VERSION`. Real services pass
+their own monitoring version, independently of the SDK's Git tag and `VERSION`.
+
+## Install
+
+```sh
+go get github.com/owenyeo/go-observe@v0.1.0
+```
+
+While this repository is private, configure Git authentication and
+`GOPRIVATE=github.com/owenyeo/*` first. Anonymous installation requires a public repository.
 
 ## Try it locally
 
@@ -45,8 +54,8 @@ curl http://127.0.0.1:8080/work
 curl 'http://127.0.0.1:8080/work?fail=1'
 curl 'http://127.0.0.1:8080/work?application=1'
 curl http://127.0.0.1:9090/metrics
-go run ./examples/monitoring -version "$(cat VERSION)" | go run ./cmd/observe render -out artifacts/staging.json
-go run ./cmd/observe validate -bundle artifacts/staging.json -version-file VERSION
+go run ./examples/monitoring -version "$(cat examples/monitoring/VERSION)" | go run ./cmd/observe normalize -out artifacts/staging.json
+go run ./cmd/observe validate -bundle artifacts/staging.json -version-file examples/monitoring/VERSION
 ```
 
 For an isolated dashboard preview, see [local preview](docs/local-preview.md).
@@ -56,7 +65,7 @@ For an isolated dashboard preview, see [local preview](docs/local-preview.md).
 ```go
 t, err := telemetry.New(ctx, telemetry.Config{
     Service: "checkout", Environment: "staging", Logger: logger,
-    Registry: existingRegistry, // optional; otherwise a private registry is created
+    Registerer: existingRegistry, Gatherer: existingRegistry, // optional pair
 })
 if err != nil { return err }
 
@@ -68,24 +77,39 @@ if err != nil { return err }
 handler := httpStats.Middleware(router)
 ```
 
-Register business counters/histograms through `t.Registerer`; standard Prometheus
+Register business counters/histograms through `t.Registerer()`; standard Prometheus
 types remain available. Use `httpmetrics.MarkFailed(r.Context())` when an operation
 fails despite HTTP 200. Serve `t.MetricsHandler()` on your private/authenticated
 listener. Shutdown drains only a tracing provider created by the SDK.
 
 Standard labels are `service_name` and optional `environment`. Scrape configuration
 adds replica/cluster labels such as `instance`, `pod` or `cluster`. Custom metric
-labels must not duplicate the standard constant labels.
+labels must not duplicate the standard constant labels: when `Environment` is set,
+registering a metric with its own `environment` label through `t.Registerer()` returns an error. Both registry
+interfaces must be supplied together and describe the same backing registry. To
+use globals explicitly, pass `prometheus.DefaultRegisterer` and
+`prometheus.DefaultGatherer`; otherwise the SDK creates a private registry. Metrics
+already registered outside the SDK are gathered as-is, without added labels.
 
 Optional tracing uses OTLP/HTTP with caller-supplied endpoint/headers or an existing
-provider. Set `SampleRatio` explicitly (.1 = 10%, 1 = all, 0 = none). HTTPS is the
+provider. Set `SampleRatio` explicitly, for example `new(float64(.1))` for 10% of
+new root traces. A nil ratio disables optional tracing with a warning; explicit
+zero drops new roots. Trusted parent sampling decisions are preserved, including
+sampled parents when the root ratio is zero. HTTPS is the
 default; trusted local HTTP requires `AllowInsecure`. Public inbound trace context
 is ignored by default; set `TrustIncomingTrace` only at a trusted boundary.
 
 Logs use `slog`: readable message, separate fields and optional trace/span IDs.
+Request completion logs are disabled by default; set `httpmetrics.Config.AccessLogs`
+to true to emit them at Info. Metrics and spans are independent of that switch.
+`observe_trace_export_enabled` reports successful configuration, not sampling or delivery.
+Supplied exporters transfer to the SDK once metric setup succeeds; failed trace
+setup closes them. If `New` returns an error, the caller keeps ownership. A supplied
+tracer provider takes precedence, so any unused exporter also stays caller-owned.
+The OTLP endpoint must include its full path, usually `/v1/traces`.
 Export failures increment `observe_trace_export_failures_total`; trace setup
 failure leaves metrics/logs working. Runtime/process collectors are optional:
-register standard Prometheus Go/process collectors through `t.Registerer` if needed.
+register standard Prometheus Go/process collectors through `t.Registerer()` if needed.
 
 ## Define monitoring in Go
 
@@ -183,8 +207,9 @@ See [release workflow](docs/releases.md) for version gating, promotion and rollb
   Dashboard comparison is symmetric and excludes classic server bookkeeping.
   Server content normalization that changes authored fields fails readback rather
   than silently accepting drift.
-- The latency helper uses Prometheus 3's normalized histogram bucket labels.
-  Backends storing legacy labels require explicit `slo.Ratio` selectors.
+- The latency helper accepts both integer bucket encodings (`1` and `1.0`). Each
+  histogram should expose one encoding per bucket; duplicate encodings for the
+  same replica would count the bucket twice.
 - Direct rolling-window queries need matching retention and sufficient samples.
   Large fleets may need recording rules; this SDK does not install ruler rules.
 - No traffic yields unknown SLO attainment and does not fire a burn alert. Missing
@@ -207,6 +232,15 @@ Add this to the consuming repository's root `AGENTS.md`:
 > Before changing instrumentation or monitoring definitions, resolve the pinned
 > go-observe module directory (`go list -m -f '{{.Dir}}' github.com/owenyeo/go-observe`)
 > and read its `AGENTS.md`. Follow its dashboard, SLO and alert standards.
+
+## Local development and migration
+
+Before v0.1.0, callers using `Config.Registry` should supply both `Registerer` and
+`Gatherer` instead. Change `t.Registerer` to `t.Registerer()`, provide a sample-ratio
+pointer, and enable `AccessLogs` only where desired. `observe normalize` replaces
+`observe render`: the Go definition program performs rendering; the CLI validates
+and formats its JSON output. Reusable workflow callers remove `sdk-repository` and
+`sdk-ref`; the service's `go.mod` now selects the SDK for both rendering and publishing.
 
 For local consumption, use `go mod edit -replace=github.com/owenyeo/go-observe=/path/to/go-observe`
 and `go get github.com/owenyeo/go-observe`.

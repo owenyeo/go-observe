@@ -29,7 +29,7 @@ and at least two scrapes for counter rates; stopped services should show missing
 coverage rather than artificial healthy values.
 
 ```sh
-go run ./examples/monitoring -version "$(cat VERSION)" | go run ./cmd/observe render -out artifacts/staging.json
+go run ./examples/monitoring -version "$(cat examples/monitoring/VERSION)" | go run ./cmd/observe normalize -out artifacts/staging.json
 go run ./cmd/observe diff -bundle artifacts/staging.json -allow-insecure
 go run ./cmd/observe apply -bundle artifacts/staging.json -allow-insecure
 go run ./examples/promql-check -out artifacts/promql-test.json

@@ -3,8 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/owenyeo/go-observe/internal/cli"
 	"os"
+
+	"github.com/owenyeo/go-observe/internal/cli"
 )
 
 func main() {

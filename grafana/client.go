@@ -52,16 +52,16 @@ func NewClientWithConfig(cfg ClientConfig) (*Client, error) {
 	baseURL, token, allowInsecure := cfg.URL, cfg.Token, cfg.AllowInsecure
 	parsed, err := url.Parse(baseURL)
 	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || token == "" {
-		return nil, errors.New("Grafana needs an absolute HTTP(S) URL without embedded credentials and a nonempty token")
+		return nil, errors.New("grafana needs an absolute HTTP(S) URL without embedded credentials and a nonempty token")
 	}
 	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && allowInsecure) {
-		return nil, errors.New("Grafana requires HTTPS; explicit insecure access is only for trusted local/private installations")
+		return nil, errors.New("grafana requires HTTPS; explicit insecure access is only for trusted local/private installations")
 	}
 	httpClient := http.Client{Timeout: 20 * time.Second}
 	if cfg.HTTPClient != nil {
 		httpClient = *cfg.HTTPClient
 	}
-	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("Grafana redirects are rejected") }
+	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("grafana redirects are rejected") }
 	return &Client{baseURL: strings.TrimSuffix(baseURL, "/"), token: token, http: &httpClient}, nil
 }
 
@@ -75,7 +75,7 @@ type HTTPError struct {
 
 // Error returns the method, API path and status; it never includes credentials.
 func (e *HTTPError) Error() string {
-	return fmt.Sprintf("Grafana %s %s returned HTTP %d", e.Method, e.Path, e.StatusCode)
+	return fmt.Sprintf("grafana %s %s returned HTTP %d", e.Method, e.Path, e.StatusCode)
 }
 
 // TransportError withholds the underlying transport message, which may contain
@@ -88,7 +88,7 @@ type TransportError struct {
 
 // Error returns a sanitized transport failure message.
 func (e *TransportError) Error() string {
-	return "Grafana request transport failed; transport details withheld"
+	return "grafana request transport failed; transport details withheld"
 }
 
 // Unwrap exposes only a recognized context error, never arbitrary transport data.
@@ -124,7 +124,7 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 			return false, err
 		}
 		if len(encoded) > maxBodyBytes {
-			return false, errors.New("Grafana request exceeds 16 MiB")
+			return false, errors.New("grafana request exceeds 16 MiB")
 		}
 		body = bytes.NewReader(encoded)
 	}
@@ -153,10 +153,10 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 		return false, transportError(err)
 	}
 	if len(encoded) > maxBodyBytes {
-		return false, errors.New("Grafana response exceeds 16 MiB")
+		return false, errors.New("grafana response exceeds 16 MiB")
 	}
 	if err := json.Unmarshal(encoded, output); err != nil {
-		return false, errors.New("Grafana returned invalid JSON")
+		return false, errors.New("grafana returned invalid JSON")
 	}
 	return true, nil
 }

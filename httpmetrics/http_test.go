@@ -20,7 +20,7 @@ func setup(t *testing.T) (*Instrumentation, *prometheus.Registry, *bytes.Buffer)
 	t.Helper()
 	registry := prometheus.NewRegistry()
 	logs := &bytes.Buffer{}
-	tel, err := telemetry.New(context.Background(), telemetry.Config{Service: "example", Registry: registry, Logger: slog.New(slog.NewJSONHandler(logs, nil))})
+	tel, err := telemetry.New(context.Background(), telemetry.Config{Service: "example", Registerer: registry, Gatherer: registry, Logger: slog.New(slog.NewJSONHandler(logs, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,5 +178,22 @@ func TestPublicCallerCannotChooseTraceID(t *testing.T) {
 	spans := exporter.GetSpans()
 	if len(spans) != 1 || spans[0].SpanContext.TraceID().String() == "11111111111111111111111111111111" {
 		t.Fatal("untrusted trace ID accepted")
+	}
+}
+
+func TestAccessLoggingIsOptInAndMetricsRemainEnabled(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		i, registry, logs := setup(t)
+		i.config.AccessLogs = enabled
+		i.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Pattern = "GET /work"
+			w.WriteHeader(http.StatusServiceUnavailable)
+		})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/work?secret=private", nil))
+		if strings.Contains(logs.String(), "HTTP request completed") != enabled || strings.Contains(logs.String(), "private") {
+			t.Fatal("access log opt-in or sensitive-data handling failed")
+		}
+		if metric(t, registry, "http_server_requests_total", map[string]string{"outcome": "server_error"}) != 1 {
+			t.Fatal("disabling access logs stopped metrics")
+		}
 	}
 }
