@@ -32,8 +32,21 @@ to the repository root. The initial compiler resolves the service's `go.mod`; bo
 programs then run with the pinned SDK's tested `.go-version`.
 For private SDK access, callers need access to the private reusable workflow and
 may supply `MODULE_READ_TOKEN` with repository read permission for dependency fetches.
-Tokens are not stored in bundles or Git URLs. Other private module hosts require
-appropriate Go/Git configuration in the consuming project.
+`private-module-patterns` defaults to `github.com/owenyeo/go-observe` and is appended
+to existing `GOPRIVATE` configuration, even without that token. Include every private
+namespace needed by the service, for example:
+
+```yaml
+with:
+  private-module-patterns: github.com/owenyeo/go-observe,github.com/example-org/*
+secrets:
+  MODULE_READ_TOKEN: ${{ secrets.MODULE_READ_TOKEN }}
+```
+
+The token must have read access to all required private GitHub repositories.
+Tokens are not stored in bundles or Git URLs. Private module patterns bypass the
+public Go proxy/checksum database; they do not grant repository access. Other Git
+hosts require their own authentication configuration.
 
 Create staging/production GitHub environments with their own folder-scoped
 Grafana credentials. Set production reviewers using the project's existing
