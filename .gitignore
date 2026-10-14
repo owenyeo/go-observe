@@ -1,0 +1,8 @@
+/dist/
+/artifacts/
+/.cache/
+/.local/
+/.env
+/.env.*
+*.test
+.DS_Store

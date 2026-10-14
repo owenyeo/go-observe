@@ -1,0 +1,20 @@
+services:
+  grafana:
+    image: grafana/grafana:13.1.3
+    ports: ["127.0.0.1:8793:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: local-observe-demo
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - ./datasources.yml:/etc/grafana/provisioning/datasources/observe.yml:ro
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    ports: ["127.0.0.1:8794:9090"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro

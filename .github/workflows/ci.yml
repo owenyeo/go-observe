@@ -1,0 +1,55 @@
+name: Check SDK
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  minimum-go:
+    runs-on: ubuntu-latest
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          # Test the library compatibility promise separately from the pinned toolchain.
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./...
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: .go-version
+          cache: true
+      - name: Check formatting and behavior
+        shell: sh
+        run: |
+          set -eu
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test -race ./...
+          go run ./examples/monitoring -version "$(cat VERSION)" | go run ./cmd/observe validate -version-file VERSION
+      - name: Start isolated Grafana
+        run: docker compose -p sdk-check -f examples/local/compose.yml up -d --wait
+      - name: Check real Grafana publication and PromQL behavior
+        shell: sh
+        env:
+          OBSERVE_TEST_GRAFANA: http://127.0.0.1:8793
+        run: |
+          set -eu
+          go test ./grafana -run TestLocalGrafana -v
+          go run ./examples/promql-check -out artifacts/promql-test.json
+          docker compose -p sdk-check -f examples/local/compose.yml run --rm --no-deps -T \
+            -v "$PWD/artifacts:/checks:ro" --entrypoint /bin/promtool prometheus test rules /checks/promql-test.json
+      - name: Stop local preview
+        if: always()
+        run: docker compose -p sdk-check -f examples/local/compose.yml down
