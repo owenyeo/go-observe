@@ -31,7 +31,7 @@ their own monitoring version, independently of the SDK's Git tag and `VERSION`.
 ## Install
 
 ```sh
-go get github.com/owenyeo/go-observe@v0.1.0
+go get github.com/owenyeo/go-observe@v0.1.1
 ```
 
 While this repository is private, configure Git authentication and
@@ -150,7 +150,12 @@ namespace from `Target.Namespace` (or the resource if unset). Render binds the
 folder and strips exported server metadata. Set the namespace explicitly when
 promoting to a different Grafana stack.
 `Definition.OverviewUID` preserves an existing dashboard identifier when adopting
-it. The [existing-metrics example](examples/existing-metrics/main.go) demonstrates
+it as a generated SLO overview. Without objectives, setting this field alone only
+links alerts to that dashboard; it does not create, update or claim the dashboard.
+This explicit reference takes precedence over custom dashboards. With no explicit
+UID, alerts link to the first generated/custom dashboard, or omit `dashboard_url`
+if there is none. Removing the reference clears the previous alert link on apply.
+The [existing-metrics example](examples/existing-metrics/main.go) demonstrates
 this without changing instrumentation or embedding a company's deployment details.
 
 The generated dashboard shows success and budget remaining with traffic/error

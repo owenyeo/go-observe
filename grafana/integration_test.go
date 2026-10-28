@@ -84,6 +84,55 @@ func TestLocalGrafana(t *testing.T) {
 			t.Fatalf("retained %s is not idempotent", change.Kind)
 		}
 	}
+	// A guardrail may link to an existing dashboard without publishing it.
+	// Real Grafana canonicalizes seconds to minutes on both create and update.
+	definition := guardrailDefinition()
+	overviewUID := ResourceUID(bundle.Service, bundle.Target.Environment, "dashboard", "overview")
+	for _, test := range []struct {
+		pending     time.Duration
+		stored      string
+		action      string
+		overviewUID string
+	}{
+		{pending: 2 * time.Minute, stored: "2m", action: "create", overviewUID: overviewUID},
+		{pending: 5 * time.Minute, stored: "5m", action: "update", overviewUID: overviewUID},
+		{pending: 5 * time.Minute, stored: "5m", action: "update"},
+	} {
+		definition.Guardrails[0].Pending = test.pending
+		definition.OverviewUID = test.overviewUID
+		guardrails, err := Render(definition, bundle.Target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(guardrails.Dashboards) != 0 {
+			t.Fatal("existing dashboard reference became a publication resource")
+		}
+		changes, err := client.Apply(context.Background(), guardrails)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(changes) != 1 || changes[0].Kind != "alert" || changes[0].Action != test.action {
+			t.Fatalf("expected only a guardrail %s, got %+v", test.action, changes)
+		}
+		var retained Rule
+		if code := request("GET", "/api/v1/provisioning/alert-rules/"+guardrails.Alerts[0].UID, nil, &retained); code != 200 {
+			t.Fatalf("read back guardrail: HTTP %d", code)
+		}
+		wantLink := ""
+		if test.overviewUID != "" {
+			wantLink = baseURL + "/d/" + test.overviewUID
+		}
+		if retained.For != test.stored || !retained.IsPaused || retained.Annotations["dashboard_url"] != wantLink {
+			t.Fatalf("guardrail pending period, pause state or dashboard link was not retained: %+v", retained)
+		}
+		if _, present := retained.Annotations["dashboard_url"]; test.overviewUID == "" && present {
+			t.Fatal("removed dashboard reference was retained")
+		}
+		changes, err = client.Apply(context.Background(), guardrails)
+		if err != nil || len(changes) != 1 || changes[0].Action != "unchanged" {
+			t.Fatalf("guardrail apply was not idempotent: changes=%+v, error=%v", changes, err)
+		}
+	}
 	bundle.Version = "0.1.1"
 	bundle.Alerts[0].Annotations["first_check"] = "Check the changed runbook instruction."
 	if _, err := client.Apply(context.Background(), bundle); err != nil {

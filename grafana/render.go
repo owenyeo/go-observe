@@ -30,9 +30,12 @@ var dashboardVariable = regexp.MustCompile(`\$(?:\{|[A-Za-z_])`)
 // a monitoring release separately from the application's binary version.
 // Definitions and targets must remain immutable while Render runs.
 type Definition struct {
-	Service          string
-	Version          string
-	OverviewUID      string // optional existing dashboard UID; otherwise generated deterministically.
+	Service string
+	Version string
+	// OverviewUID selects the generated SLO overview's UID. Without objectives,
+	// it only links alerts; it does not add that dashboard to the bundle.
+	// When empty, alerts link to the first dashboard in the bundle, if any.
+	OverviewUID      string
 	Objectives       []slo.Objective
 	Guardrails       []Guardrail
 	CustomDashboards []json.RawMessage // classic JSON or dashboard.grafana.app/v2 resources.
@@ -128,6 +131,9 @@ func Render(def Definition, target Target) (Bundle, error) {
 	if !resourceID.MatchString(target.FolderUID) || !resourceID.MatchString(target.PrometheusUID) || len(target.Scope) == 0 {
 		return Bundle{}, errors.New("target needs a folder, Prometheus datasource and explicit query scope")
 	}
+	if def.OverviewUID != "" && !resourceID.MatchString(def.OverviewUID) {
+		return Bundle{}, errors.New("overview UID must contain 1–40 letters, digits, underscores or hyphens")
+	}
 	if target.EnableAlerts && target.ContactPoint == "" {
 		return Bundle{}, errors.New("active alerts need an explicit contact point")
 	}
@@ -214,15 +220,17 @@ func Render(def Definition, target Target) (Bundle, error) {
 		}
 		bundle.Dashboards = append(bundle.Dashboards, encoded)
 	}
-	for index := range bundle.Alerts {
-		if len(bundle.Dashboards) == 0 {
-			delete(bundle.Alerts[index].Annotations, "dashboard_url")
-			continue
-		}
+	dashboardUID := def.OverviewUID
+	if dashboardUID == "" && len(bundle.Dashboards) > 0 {
 		var first map[string]any
 		_ = json.Unmarshal(bundle.Dashboards[0], &first)
 		document, _ := parseDashboard(first)
-		bundle.Alerts[index].Annotations["dashboard_url"] = strings.TrimSuffix(target.URL, "/") + "/d/" + document.uid()
+		dashboardUID = document.uid()
+	}
+	if dashboardUID != "" {
+		for index := range bundle.Alerts {
+			bundle.Alerts[index].Annotations["dashboard_url"] = strings.TrimSuffix(target.URL, "/") + "/d/" + dashboardUID
+		}
 	}
 	if err := bundle.Validate(); err != nil {
 		return Bundle{}, err
@@ -278,10 +286,9 @@ func newRule(service string, target Target, id, name, source, expression, operat
 	rule := Rule{UID: ResourceUID(service, target.Environment, "alert", id), Title: service + " / " + target.Environment + " / " + name,
 		FolderUID: target.FolderUID, RuleGroup: ResourceUID(service, target.Environment, "group", "alerts"), Condition: "B", For: fmt.Sprint(int64(pending/time.Second)) + "s",
 		NoDataState: "NoData", ExecErrState: "Error", IsPaused: !target.EnableAlerts,
-		Labels: map[string]string{"service_name": service, "environment": target.Environment, "severity": severity, "alert_id": id, "go_observe_owner": owner(service, target.Environment), "team": response.Owner},
-		Annotations: map[string]string{"summary": name, "first_check": response.FirstCheck, "runbook_url": response.RunbookURL, "owner": response.Owner, "escalation": response.Escalation,
-			"dashboard_url": strings.TrimSuffix(target.URL, "/") + "/d/" + ResourceUID(service, target.Environment, "dashboard", "overview")},
-		Data: []Query{sourceQuery("A", source, uid, expression, 21600), thresholdQuery},
+		Labels:      map[string]string{"service_name": service, "environment": target.Environment, "severity": severity, "alert_id": id, "go_observe_owner": owner(service, target.Environment), "team": response.Owner},
+		Annotations: map[string]string{"summary": name, "first_check": response.FirstCheck, "runbook_url": response.RunbookURL, "owner": response.Owner, "escalation": response.Escalation},
+		Data:        []Query{sourceQuery("A", source, uid, expression, 21600), thresholdQuery},
 	}
 	if target.ContactPoint != "" {
 		rule.NotificationSettings = map[string]string{"receiver": target.ContactPoint}

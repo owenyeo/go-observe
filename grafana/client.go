@@ -14,6 +14,8 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/prometheus/common/model"
 )
 
 const maxBodyBytes = 16 << 20
@@ -289,7 +291,7 @@ func (c *Client) Diff(ctx context.Context, bundle Bundle) ([]Change, error) {
 		action := "create"
 		if found {
 			action = "update"
-			if containsContent(current, desired) {
+			if alertContainsContent(current, desired) {
 				action = "unchanged"
 			}
 		} else {
@@ -370,7 +372,7 @@ func (c *Client) Apply(ctx context.Context, bundle Bundle) ([]Change, error) {
 			if _, err := c.request(ctx, "GET", "/api/v1/provisioning/alert-rules/"+url.PathEscape(change.UID), nil, &retained, false); err != nil {
 				return changes, err
 			}
-			if !containsContent(retained, desired) {
+			if !alertContainsContent(retained, desired) {
 				return changes, fmt.Errorf("alert %s did not retain reviewed content", change.UID)
 			}
 		}
@@ -409,6 +411,31 @@ func normalizeDashboard(content map[string]any, classic bool) map[string]any {
 		}
 	}
 	return normalized
+}
+
+// alertContainsContent accounts for Grafana's duration formatting only at the
+// top-level pending period. Query, label and annotation strings stay literal.
+func alertContainsContent(actual, expected map[string]any) bool {
+	actualPending, actualIsString := actual["for"].(string)
+	expectedPending, expectedIsString := expected["for"].(string)
+	if actualIsString && expectedIsString {
+		// Grafana uses Prometheus durations, including day/week units that
+		// time.ParseDuration does not support. Malformed values are not normalized.
+		actualDuration, actualErr := model.ParseDuration(actualPending)
+		expectedDuration, expectedErr := model.ParseDuration(expectedPending)
+		if actualErr == nil && expectedErr == nil && actualDuration == expectedDuration {
+			expected = maps.Clone(expected)
+			expected["for"] = actualPending
+		}
+	}
+	// This optional annotation belongs to the definition. Removing its target
+	// must clear the old link instead of treating it as a server-added default.
+	actualAnnotations, _ := actual["annotations"].(map[string]any)
+	expectedAnnotations, _ := expected["annotations"].(map[string]any)
+	if !reflect.DeepEqual(actualAnnotations["dashboard_url"], expectedAnnotations["dashboard_url"]) {
+		return false
+	}
+	return containsContent(actual, expected)
 }
 
 // containsContent tolerates server-added defaults, but compares every authored

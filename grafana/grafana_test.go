@@ -91,6 +91,15 @@ func TestAllOwnershipChecksHappenBeforeWritingAndApplyIsIdempotent(t *testing.T)
 		case (r.Method == "POST" || r.Method == "PUT") && strings.HasPrefix(r.URL.Path, "/api/v1/provisioning/alert-rules"):
 			var payload map[string]any
 			json.NewDecoder(r.Body).Decode(&payload)
+			// Grafana retains equivalent pending periods in its canonical units.
+			switch payload["for"] {
+			case "120s":
+				payload["for"] = "2m"
+			case "300s":
+				payload["for"] = "5m"
+			case "600s":
+				payload["for"] = "10m"
+			}
 			rules[payload["uid"].(string)] = payload
 			writes++
 			io.WriteString(w, `{}`)
@@ -101,6 +110,8 @@ func TestAllOwnershipChecksHappenBeforeWritingAndApplyIsIdempotent(t *testing.T)
 	}))
 	defer server.Close()
 	bundle := fixture(t, server.URL)
+	bundle.Alerts[0].For = "120s"
+	bundle.Alerts[1].For = "300s"
 	client, err := NewClient(server.URL, "synthetic-test-token", true)
 	if err != nil {
 		t.Fatal(err)
@@ -121,6 +132,154 @@ func TestAllOwnershipChecksHappenBeforeWritingAndApplyIsIdempotent(t *testing.T)
 	}
 	if writes != 3 {
 		t.Fatal("unchanged bundle was republished")
+	}
+	bundle.Alerts[0].For = "600s"
+	changes, err := client.Apply(context.Background(), bundle)
+	if err != nil || writes != 4 || changes[1].Action != "update" {
+		t.Fatalf("changed pending period was not published: writes=%d, error=%v", writes, err)
+	}
+	changes, err = client.Apply(context.Background(), bundle)
+	if err != nil || writes != 4 {
+		t.Fatalf("updated pending period was republished: writes=%d, error=%v", writes, err)
+	}
+	for _, change := range changes {
+		if change.Action != "unchanged" {
+			t.Fatalf("repeated apply returned %s for %s", change.Action, change.UID)
+		}
+	}
+}
+
+func guardrailDefinition() Definition {
+	return Definition{Service: "checkout", Version: "0.1.0", Guardrails: []Guardrail{{
+		ID: "backlog", Name: "Queue backlog", Description: "Queued requests need attention.",
+		Query: `sum(queued_requests{${scope}})`, Source: "prometheus", Operator: "gt",
+		Threshold: 100, Pending: 2 * time.Minute, Severity: "warning",
+		Response: slo.Response{Owner: "service-team", RunbookURL: "https://example.com/runbook", FirstCheck: "Inspect queue age", Escalation: "Notify the service on-call"},
+	}}}
+}
+
+func TestAlertPendingDurationComparison(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		actual   any
+		expected any
+		want     bool
+	}{
+		{name: "zero", actual: "0s", expected: "0s", want: true},
+		{name: "minutes", actual: "2m", expected: "120s", want: true},
+		{name: "compound", actual: "2m30s", expected: "150s", want: true},
+		{name: "hours", actual: "1h", expected: "3600s", want: true},
+		{name: "days", actual: "1d", expected: "86400s", want: true},
+		{name: "weeks", actual: "1w", expected: "604800s", want: true},
+		{name: "years", actual: "1y", expected: "31536000s", want: true},
+		{name: "changed duration", actual: "5m", expected: "120s"},
+		{name: "malformed actual", actual: "unknown", expected: "0s"},
+		{name: "malformed expected", actual: "0s", expected: "unknown"},
+		{name: "empty", actual: "", expected: "0s"},
+		{name: "missing", actual: nil, expected: "0s"},
+		{name: "wrong type", actual: float64(120), expected: "120s"},
+		{name: "negative", actual: "-2m", expected: "-120s"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			actual := map[string]any{"for": test.actual, "serverField": "ignored"}
+			expected := map[string]any{"for": test.expected}
+			if got := alertContainsContent(actual, expected); got != test.want {
+				t.Fatalf("comparison = %v, want %v", got, test.want)
+			}
+			if actual["for"] != test.actual || expected["for"] != test.expected {
+				t.Fatal("comparison mutated caller content")
+			}
+		})
+	}
+}
+
+func TestAlertDurationComparisonPreservesOtherFields(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"annotation", func(rule map[string]any) { rule["annotations"].(map[string]any)["summary"] = "2m" }},
+		{"nested for", func(rule map[string]any) { rule["annotations"].(map[string]any)["for"] = "2m" }},
+		{"label", func(rule map[string]any) { rule["labels"].(map[string]any)["window"] = "2m" }},
+		{"scope", func(rule map[string]any) { rule["labels"].(map[string]any)["environment"] = "production" }},
+		{"query", func(rule map[string]any) { rule["data"].([]any)[0].(map[string]any)["expr"] = "vector(300)" }},
+		{"threshold", func(rule map[string]any) { rule["data"].([]any)[0].(map[string]any)["threshold"] = float64(300) }},
+		{"pause state", func(rule map[string]any) { rule["isPaused"] = false }},
+		{"removed dashboard reference", func(rule map[string]any) {
+			rule["annotations"].(map[string]any)["dashboard_url"] = "https://example.com/d/old"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const content = `{"for":"120s","annotations":{"summary":"120s","for":"120s"},"labels":{"window":"120s","environment":"staging"},"data":[{"expr":"vector(120)","threshold":120}],"isPaused":true}`
+			var actual, expected map[string]any
+			if err := json.Unmarshal([]byte(content), &actual); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal([]byte(content), &expected); err != nil {
+				t.Fatal(err)
+			}
+			actual["for"] = "2m"
+			test.mutate(actual)
+			if alertContainsContent(actual, expected) {
+				t.Fatal("duration normalization hid an authored field difference")
+			}
+		})
+	}
+}
+
+func TestGuardrailDashboardLinks(t *testing.T) {
+	target := fixture(t, "https://example.com/grafana/").Target
+	custom := json.RawMessage(`{"uid":"custom-detail","title":"Queue detail","schemaVersion":41,"panels":[]}`)
+	for _, test := range []struct {
+		name           string
+		overviewUID    string
+		custom         bool
+		wantUID        string
+		wantDashboards int
+	}{
+		{name: "no dashboard"},
+		{name: "existing dashboard reference", overviewUID: "existing-overview", wantUID: "existing-overview"},
+		{name: "custom dashboard", custom: true, wantUID: "custom-detail", wantDashboards: 1},
+		{name: "explicit reference takes precedence", overviewUID: "existing-overview", custom: true, wantUID: "existing-overview", wantDashboards: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			definition := guardrailDefinition()
+			definition.OverviewUID = test.overviewUID
+			if test.custom {
+				definition.CustomDashboards = []json.RawMessage{custom}
+			}
+			bundle, err := Render(definition, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(bundle.Dashboards) != test.wantDashboards {
+				t.Fatalf("got %d publication dashboards, want %d", len(bundle.Dashboards), test.wantDashboards)
+			}
+			link, present := bundle.Alerts[0].Annotations["dashboard_url"]
+			if test.wantUID == "" {
+				if present {
+					t.Fatalf("dashboard link must be omitted: %q", link)
+				}
+			} else if link != "https://example.com/grafana/d/"+test.wantUID {
+				t.Fatalf("unexpected dashboard link: %q", link)
+			}
+			if test.custom && !strings.Contains(string(bundle.Dashboards[0]), `"uid":"custom-detail"`) {
+				t.Fatal("existing reference replaced the declared custom dashboard")
+			}
+		})
+	}
+	for _, uid := range []string{"../other", "with spaces", "dashboard?edit", strings.Repeat("x", 41)} {
+		definition := guardrailDefinition()
+		definition.OverviewUID = uid
+		if _, err := Render(definition, target); err == nil {
+			t.Errorf("invalid existing dashboard UID accepted: %q", uid)
+		}
+	}
+	// SLO definitions still link to the overview they generate.
+	bundle := fixture(t, target.URL)
+	want := "https://example.com/grafana/d/" + ResourceUID(bundle.Service, target.Environment, "dashboard", "overview")
+	if bundle.Alerts[0].Annotations["dashboard_url"] != want {
+		t.Fatal("generated overview link changed")
 	}
 }
 
