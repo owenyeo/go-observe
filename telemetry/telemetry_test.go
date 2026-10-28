@@ -20,6 +20,40 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+func TestNamespaceScopesMetricsLogsAndOwnedTraces(t *testing.T) {
+	var logs bytes.Buffer
+	exporter := tracetest.NewInMemoryExporter()
+	tel, err := New(context.Background(), Config{
+		Namespace: "commerce", Service: "checkout", Environment: "staging",
+		Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+		Trace:  &TraceConfig{Exporter: exporter, SampleRatio: new(float64(1))},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tel.Logger(context.Background()).Info("namespace check")
+	_, span := tel.Tracer("test").Start(context.Background(), "work")
+	span.End()
+	if err := tel.ownedProvider.ForceFlush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	spans := exporter.GetSpans()
+	found := false
+	for _, attr := range spans[0].Resource.Attributes() {
+		if string(attr.Key) == "service.namespace" && attr.Value.AsString() == "commerce" {
+			found = true
+		}
+	}
+	response := httptest.NewRecorder()
+	tel.MetricsHandler().ServeHTTP(response, httptest.NewRequest("GET", "/metrics", nil))
+	if !found || !strings.Contains(response.Body.String(), `service_namespace="commerce"`) || !strings.Contains(logs.String(), `"namespace":"commerce"`) {
+		t.Fatal("namespace was not propagated across telemetry")
+	}
+	if err := tel.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type failingExporter struct{}
 
 func (failingExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan) error {

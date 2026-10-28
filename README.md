@@ -31,7 +31,7 @@ their own monitoring version, independently of the SDK's Git tag and `VERSION`.
 ## Install
 
 ```sh
-go get github.com/owenyeo/go-observe@v0.1.1
+go get github.com/owenyeo/go-observe@v0.1.2
 ```
 
 While this repository is private, configure Git authentication and
@@ -54,7 +54,7 @@ curl http://127.0.0.1:8080/work
 curl 'http://127.0.0.1:8080/work?fail=1'
 curl 'http://127.0.0.1:8080/work?application=1'
 curl http://127.0.0.1:9090/metrics
-go run ./examples/monitoring -version "$(cat examples/monitoring/VERSION)" | go run ./cmd/observe normalize -out artifacts/staging.json
+go run ./examples/monitoring -version "$(cat examples/monitoring/VERSION)" | go run ./cmd/observe normalize -config examples/monitoring/publishing.json -environment staging -out artifacts/staging.json
 go run ./cmd/observe validate -bundle artifacts/staging.json -version-file examples/monitoring/VERSION
 ```
 
@@ -82,7 +82,7 @@ types remain available. Use `httpmetrics.MarkFailed(r.Context())` when an operat
 fails despite HTTP 200. Serve `t.MetricsHandler()` on your private/authenticated
 listener. Shutdown drains only a tracing provider created by the SDK.
 
-Standard labels are `service_name` and optional `environment`. Scrape configuration
+Standard labels are `service_name` and optional `service_namespace`/`environment`. Scrape configuration
 adds replica/cluster labels such as `instance`, `pod` or `cluster`. Custom metric
 labels must not duplicate the standard constant labels: when `Environment` is set,
 registering a metric with its own `environment` label through `t.Registerer()` returns an error. Both registry
@@ -127,8 +127,7 @@ objective := slo.Objective{
         Good:  slo.Selector{Metric: "operations_total",
             Labels: map[string]string{"result": "success"}},
     },
-    Response: slo.Response{Owner: "checkout-team",
-        RunbookURL: "https://example.com/runbooks/checkout",
+    Response: slo.Response{RunbookURL: "https://example.com/runbooks/checkout",
         FirstCheck: "Inspect operation failures and dependencies.",
         Escalation: "Notify the service on-call."},
 }
@@ -146,7 +145,7 @@ Custom guardrails use `${scope}` inside selectors. Custom dashboard JSON can be
 included in `Definition.CustomDashboards`; its author must scope its queries. Both
 classic dashboard JSON and `dashboard.grafana.app/v2` resources are supported. For
 v2, identity comes from `metadata.name`, content from `spec`, and the destination
-namespace from `Target.Namespace` (or the resource if unset). Render binds the
+namespace from `Target.GrafanaNamespace` (or the resource if unset). Render binds the
 folder and strips exported server metadata. Set the namespace explicitly when
 promoting to a different Grafana stack.
 `Definition.OverviewUID` preserves an existing dashboard identifier when adopting
@@ -173,7 +172,7 @@ go run ./cmd/observe apply -bundle artifacts/staging.json
 Set `GRAFANA_TOKEN` through your secret store/CI. Neither command reads credentials
 from the bundle. `diff` is read-only; `apply` checks every resource's ownership,
 folder and datasources before writing, then reads changes back. Generated UIDs are
-stable by service/environment/definition ID. Another owner's resource is a hard
+stable by namespace/service/environment/definition ID. Another owner's resource is a hard
 failure; adoption of existing dashboards requires deliberate ownership tagging.
 
 Library callers can use `grafana.NewClientWithConfig` with an optional
@@ -189,8 +188,12 @@ Route/exclusion callbacks must be safe for concurrent requests. Serialize releas
 operations for the same Grafana resources. Stop producers before Shutdown; only
 the provider/exporter owned by the SDK is drained.
 
-Alerts are paused by default. To activate, explicitly set `Target.EnableAlerts`
-and an existing `ContactPoint` with an integration and recovery notifications.
+Alerts are paused by default. Resolve deployment configuration into the rendered
+bundle to choose activation, human ownership and an existing receiver.
+`Response` contains response guidance only; deployment configuration is authoritative
+for both the `owner` annotation and `team` label. `Render` leaves ownership unresolved
+and rejects activation/routing inputs; `diff`/`apply` require a resolved owner even
+for paused alerts. Every selected receiver integration must support recovery notifications.
 Test firing/recovery/routing before enabling production. Configure schedules,
 grouping and notification templates in Grafana; global policies are not overwritten.
 
@@ -200,6 +203,77 @@ and display those annotations. Severity names come from the service definitions;
 the SDK does not impose an organisation's incident priority scheme.
 
 See [release workflow](docs/releases.md) for version gating, promotion and rollback.
+
+## Namespaces and deployment configuration
+
+The SDK is service-agnostic. A logical namespace groups services, each with its
+own environments: `commerce → checkout → staging`, for example. Set
+`telemetry.Config.Namespace` and `grafana.Definition.Namespace` to the same stable
+ID. Include `service_namespace` in `Target.Scope`; the renderer rejects a mismatch.
+The telemetry wrapper adds that metric label, the owned trace provider adds
+`service.namespace`, and structured logs carry `namespace`. Existing metrics or
+caller-owned trace providers remain the application's responsibility. Scrape
+target labels must also include the namespace for queries against `up`.
+
+Generated alert, rule-group and overview IDs include the logical namespace.
+Ownership checks prevent another namespace from overwriting those resources.
+Explicit/custom dashboard UIDs remain caller-selected: give them distinct UIDs
+when sharing a Grafana destination. `Target.GrafanaNamespace` still selects Grafana's
+native dashboard API namespace; it is a separate destination setting.
+
+Empty logical namespaces preserve existing IDs and metric labels. Adding or
+renaming one is an explicit instrumentation/definition migration, not a deployment
+toggle; old resources are not automatically retired. Deployment configuration
+cannot retarget an artifact to a different namespace or environment.
+
+The [example configuration](examples/monitoring/publishing.json) is a flat JSON
+list. Each entry selects a `namespace`, `service` and `environment` and supplies
+`enableAlerts`, `owner` and `contactPoint`. Duplicate tuples are rejected.
+Use an empty namespace for legacy definitions, and an empty contact point while
+paused if no receiver should be registered. There are no inherited settings.
+
+```json
+[
+  {
+    "namespace": "commerce",
+    "service": "checkout",
+    "environment": "staging",
+    "enableAlerts": false,
+    "owner": "checkout-oncall",
+    "contactPoint": ""
+  }
+]
+```
+
+This is a CI-owned file parsed with the standard JSON decoder. Unknown settings,
+missing ownership/activation decisions and duplicate tuples fail validation.
+Owner and contact-point names refer to teams and existing Grafana receivers;
+credentials and recipient details stay in Grafana.
+
+```sh
+mkdir -p artifacts
+go run ./examples/monitoring -namespace commerce -environment staging \
+  -version "$(cat examples/monitoring/VERSION)" > artifacts/definitions.json
+go run ./cmd/observe normalize -bundle artifacts/definitions.json \
+  -config examples/monitoring/publishing.json -namespace commerce \
+  -environment staging -out artifacts/resolved.json
+go run ./cmd/observe validate -bundle artifacts/resolved.json
+go run ./cmd/observe diff -bundle artifacts/resolved.json
+go run ./cmd/observe apply -bundle artifacts/resolved.json
+```
+
+For the matching runtime example, set `APP_NAMESPACE=commerce`. Normalization is
+offline and does not read credentials. Against the disposable HTTP preview, add
+`-allow-insecure` to `diff`/`apply`; real destinations use HTTPS. Resolution changes activation, owner/team and
+receiver consistently while preserving definition IDs, queries, thresholds,
+pending periods and runbooks. An empty receiver clears old routing while paused.
+`diff` exposes the resolved before/after content; `apply` consumes exactly that
+artifact and reads changes back. Editing configuration alone never contacts Grafana.
+
+Grafana performs evaluation, notification delivery, incident tracking and escalation.
+The SDK registers resources; it has no incident worker or per-service collector.
+This version references existing receivers. Contact-point/IRM provisioning and
+scheduled recovery of deleted rules are separate future work.
 
 ## Compatibility and limits
 

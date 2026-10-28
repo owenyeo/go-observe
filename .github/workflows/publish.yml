@@ -3,7 +3,7 @@ on:
   workflow_call:
     inputs:
       mode:
-        description: release renders both targets and publishes staging; promote reuses that successful release artifact
+        description: release publishes staging; promote publishes production; release-run-id reuses existing definitions
         required: true
         type: string
       source-ref:
@@ -36,10 +36,25 @@ on:
         default: production
         type: string
       release-run-id:
-        description: Successful staging workflow run ID required for promotion
+        description: Successful definition release run; required for promotion, optional for staging republication
+        default: ''
+        type: string
+      configuration-ref:
+        description: Immutable commit SHA containing deployment configuration, independent of source-ref
+        required: true
+        type: string
+      configuration-file:
+        description: JSON configuration path relative to the repository at configuration-ref
+        required: true
+        type: string
+      namespace:
+        description: Logical namespace of the definition artifact; empty for legacy definitions
         default: ''
         type: string
     secrets:
+      GRAFANA_READ_TOKEN:
+        description: Read-only preparation token, available before the environment approval; falls back to GRAFANA_TOKEN
+        required: false
       GRAFANA_TOKEN:
         required: true
       MODULE_READ_TOKEN:
@@ -49,13 +64,15 @@ permissions:
   contents: read
   actions: read
 jobs:
-  publish:
+  prepare:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.mode == 'promote' && inputs.production-environment || inputs.staging-environment }}
-    concurrency:
-      group: monitoring-${{ github.repository }}-${{ inputs.mode }}
-      cancel-in-progress: false
+    outputs:
+      environment: ${{ steps.selection.outputs.environment }}
+      manifest: ${{ steps.review.outputs.manifest }}
     env:
+      CONFIGURATION_REF: ${{ inputs.configuration-ref }}
+      CONFIGURATION_FILE: ${{ inputs.configuration-file }}
+      NAMESPACE: ${{ inputs.namespace }}
       MODE: ${{ inputs.mode }}
       SOURCE_REF: ${{ inputs.source-ref }}
       MODULE_DIRECTORY: ${{ inputs.module-directory }}
@@ -70,13 +87,31 @@ jobs:
       GOFLAGS: '-mod=readonly'
     steps:
       - name: Validate workflow inputs
+        id: selection
         shell: sh
         run: |
           set -eu
           case "$MODE" in release|promote) ;; *) exit 1 ;; esac
-          printf '%s\n' "$SOURCE_REF" | awk 'length != 40 || /[^0-9a-f]/ { bad=1 } END { exit bad }'
+          printf '%s\n' "$SOURCE_REF" "$CONFIGURATION_REF" | awk 'length != 40 || /[^0-9a-f]/ { bad=1 } END { exit bad }'
           printf '%s\n' "$STAGING_ENV" "$PRODUCTION_ENV" | awk '!/^[a-z][a-z0-9-]*$/ { bad=1 } END { exit bad }'
           test "$STAGING_ENV" != "$PRODUCTION_ENV"
+          if [ -n "$NAMESPACE" ]; then
+            printf '%s\n' "$NAMESPACE" | awk '!/^[a-z][a-z0-9-]*$/ { bad=1 } END { exit bad }'
+          fi
+          target="$STAGING_ENV"
+          if [ "$MODE" = promote ]; then
+            target="$PRODUCTION_ENV"
+            test -n "$RELEASE_RUN_ID"
+          fi
+          if [ -n "$RELEASE_RUN_ID" ]; then
+            case "$RELEASE_RUN_ID" in *[!0-9]*) exit 1 ;; esac
+            test -z "$PREVIOUS_REF"
+          else
+            printf '%s\n' "$PREVIOUS_REF" | awk 'length != 40 || /[^0-9a-f]/ { bad=1 } END { exit bad }'
+          fi
+          case "$CONFIGURATION_FILE" in ''|/*|*..*) exit 1 ;; esac
+          printf 'environment=%s\n' "$target" >> "$GITHUB_OUTPUT"
+          printf 'SELECTED_ENV=%s\n' "$target" >> "$GITHUB_ENV"
           case "$DEFINITION_PACKAGE" in ./*) ;; *) exit 1 ;; esac
           case "$DEFINITION_PACKAGE" in *..*) exit 1 ;; esac
           case "$MODULE_DIRECTORY" in ''|/*|*..*) exit 1 ;; esac
@@ -139,14 +174,13 @@ jobs:
           go build -o "$RUNNER_TEMP/observe" github.com/owenyeo/go-observe/cmd/observe
           git diff --exit-code -- go.mod go.sum
       - name: Require a version bump and render both reviewed destinations
-        if: inputs.mode == 'release'
+        if: inputs.mode == 'release' && inputs.release-run-id == ''
         working-directory: service
         shell: sh
         env:
           MODULE_READ_TOKEN: ${{ secrets.MODULE_READ_TOKEN }}
         run: |
           set -eu
-          printf '%s\n' "$PREVIOUS_REF" | awk 'length != 40 || /[^0-9a-f]/ { bad=1 } END { exit bad }'
           git cat-file -e "$PREVIOUS_REF^{commit}"
           git merge-base --is-ancestor "$PREVIOUS_REF" "$SOURCE_REF"
           previous=0.0.0
@@ -168,8 +202,8 @@ jobs:
           cp "$RUNNER_TEMP/sdk-identity.json" "$bundles/sdk-identity.json"
           cd "$bundles"
           sha256sum ./*.json source-sha > SHA256SUMS
-      - name: Check promotion comes from a successful staging run
-        if: inputs.mode == 'promote'
+      - name: Check retained definitions come from a successful release
+        if: inputs.release-run-id != ''
         shell: sh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -179,36 +213,138 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_RUN_ID" > "$RUNNER_TEMP/source-run.json"
           jq -e --arg sha "$SOURCE_REF" '.conclusion == "success" and .head_sha == $sha and .event != "pull_request" and .event != "pull_request_target"' "$RUNNER_TEMP/source-run.json" > /dev/null
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: inputs.mode == 'promote'
+        if: inputs.release-run-id != ''
         with:
           name: monitoring-${{ inputs.source-ref }}
           path: bundles
           run-id: ${{ inputs.release-run-id }}
           github-token: ${{ github.token }}
-      - name: Verify bundle integrity and pinned source
-        working-directory: bundles
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.configuration-ref }}
+          path: deployment
+          persist-credentials: false
+      - name: Resolve retained definitions
         shell: sh
         run: |
           set -eu
+          cd bundles
           sha256sum -c SHA256SUMS
           test "$(cat source-sha)" = "$SOURCE_REF"
           cmp sdk-identity.json "$RUNNER_TEMP/sdk-identity.json"
-          target="$STAGING_ENV"
-          if [ "$MODE" = promote ]; then target="$PRODUCTION_ENV"; fi
-          jq -e --arg env "$target" '.target.environment == $env' "$target.json" > /dev/null
-      - name: Publish selected destination and verify retained content
-        working-directory: bundles
+          jq -e --arg env "$SELECTED_ENV" --arg namespace "$NAMESPACE" \
+            '.target.environment == $env and (.namespace // "") == $namespace' "$SELECTED_ENV.json" > /dev/null
+          cd ..
+          mkdir reviewed
+          cp "$RUNNER_TEMP/observe" reviewed/observe
+          cp bundles/sdk-identity.json reviewed/sdk-identity.json
+          definition="bundles/$SELECTED_ENV.json"
+          definition_sha="$(sha256sum "$definition" | cut -d ' ' -f 1)"
+          definitions_manifest_sha="$(sha256sum bundles/SHA256SUMS | cut -d ' ' -f 1)"
+          # Resolve symlinks before reading; configuration cannot escape its checkout.
+          configuration="$(realpath "deployment/$CONFIGURATION_FILE")"
+          case "$configuration" in "$PWD/deployment/"*) ;; *) exit 1 ;; esac
+          cp "$configuration" reviewed/configuration.json
+          configuration_sha="$(sha256sum reviewed/configuration.json | cut -d ' ' -f 1)"
+          "$RUNNER_TEMP/observe" normalize -bundle "$definition" -config reviewed/configuration.json \
+            -namespace "$NAMESPACE" -environment "$SELECTED_ENV" -out reviewed/resolved.json
+          resolved_sha="$(sha256sum reviewed/resolved.json | cut -d ' ' -f 1)"
+          jq -n --arg source "$SOURCE_REF" --arg ref "$CONFIGURATION_REF" --arg path "$CONFIGURATION_FILE" \
+            --arg configSHA "$configuration_sha" --arg definitionSHA "$definition_sha" --arg resolvedSHA "$resolved_sha" \
+            --arg definitionsManifestSHA "$definitions_manifest_sha" \
+            --slurpfile bundle reviewed/resolved.json --slurpfile sdk reviewed/sdk-identity.json \
+            '{sourceRef:$source, sdk:$sdk[0], namespace:($bundle[0].namespace // ""), service:$bundle[0].service,
+              environment:$bundle[0].target.environment, monitoringVersion:$bundle[0].version,
+              definitionSHA256:$definitionSHA, resolvedSHA256:$resolvedSHA,
+              definitionsManifestSHA256:$definitionsManifestSHA,
+              configuration:{ref:$ref,path:$path,sha256:$configSHA},
+              alertUIDs:[$bundle[0].alerts[].uid], dashboardUIDs:[$bundle[0].dashboards[] | (.uid // .metadata.name)]}' > reviewed/publication.json
+      - name: Prepare reviewable diff and seal artifact
+        id: review
+        shell: sh
+        env:
+          GRAFANA_TOKEN: ${{ secrets.GRAFANA_READ_TOKEN || secrets.GRAFANA_TOKEN }}
+        run: |
+          set -eu
+          test -n "$GRAFANA_TOKEN" || { echo 'Supply a preparation token available before environment approval.' >&2; exit 1; }
+          reviewed/observe diff -bundle reviewed/resolved.json > reviewed/diff.json
+          # This summary and downloadable artifact exist before the apply job's approval.
+          {
+            printf '## Monitoring publication review\n\n'
+            printf 'Review the complete before/after diff in the prepared artifact.\n\n'
+            printf '```json\n'
+            cat reviewed/publication.json
+            jq '[.[] | {kind,uid,action}]' reviewed/diff.json
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cd reviewed
+          sha256sum ./*.json observe > SHA256SUMS
+          printf 'manifest=%s\n' "$(sha256sum SHA256SUMS | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: monitoring-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            reviewed/
+            bundles/
+          retention-days: 30
+          if-no-files-found: error
+  apply:
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: ${{ needs.prepare.outputs.environment }}
+    concurrency:
+      # Different publication modes share the same destination lock.
+      group: monitoring-${{ github.repository }}-${{ needs.prepare.outputs.environment }}
+      cancel-in-progress: false
+    env:
+      EXPECTED_MANIFEST: ${{ needs.prepare.outputs.manifest }}
+      SELECTED_ENV: ${{ needs.prepare.outputs.environment }}
+      SOURCE_REF: ${{ inputs.source-ref }}
+      NAMESPACE: ${{ inputs.namespace }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: monitoring-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: prepared
+      - name: Verify reviewed artifact
+        working-directory: prepared/reviewed
+        shell: sh
+        run: |
+          set -eu
+          test "$(sha256sum SHA256SUMS | cut -d ' ' -f 1)" = "$EXPECTED_MANIFEST"
+          sha256sum -c SHA256SUMS
+          jq -e --arg source "$SOURCE_REF" --arg env "$SELECTED_ENV" --arg namespace "$NAMESPACE" \
+            '.sourceRef == $source and .environment == $env and .namespace == $namespace' publication.json > /dev/null
+          test "$(sha256sum resolved.json | cut -d ' ' -f 1)" = "$(jq -r .resolvedSHA256 publication.json)"
+          test "$(sha256sum ../bundles/SHA256SUMS | cut -d ' ' -f 1)" = "$(jq -r .definitionsManifestSHA256 publication.json)"
+          (cd ../bundles && sha256sum -c SHA256SUMS)
+          chmod +x observe
+          ./observe validate -bundle resolved.json
+      - name: Apply reviewed artifact and verify publication
+        working-directory: prepared/reviewed
         shell: sh
         env:
           GRAFANA_TOKEN: ${{ secrets.GRAFANA_TOKEN }}
         run: |
           set -eu
-          target="$STAGING_ENV"
-          if [ "$MODE" = promote ]; then target="$PRODUCTION_ENV"; fi
-          "$RUNNER_TEMP/observe" apply -bundle "$target.json"
+          # Apply preflights again for ownership/routing drift. It consumes the
+          # reviewed bytes, with no checkout, re-render or configuration resolution.
+          ./observe apply -bundle resolved.json
+          ./observe diff -bundle resolved.json > retained.json
+          jq -e 'all(.[]; .action == "unchanged")' retained.json > /dev/null
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: inputs.mode == 'release'
+        if: inputs.mode == 'release' && inputs.release-run-id == ''
         with:
           name: monitoring-${{ inputs.source-ref }}
-          path: bundles/
+          path: prepared/bundles/
           retention-days: 30
+          if-no-files-found: error
+      - name: Retain successful publication record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          # The receipt appears only after readback succeeds; there is no live
+          # recovery pointer or incident worker in this version.
+          name: monitoring-published-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.prepare.outputs.environment }}
+          path: prepared/reviewed/
+          retention-days: 30
+          if-no-files-found: error

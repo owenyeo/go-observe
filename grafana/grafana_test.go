@@ -18,12 +18,12 @@ func fixture(t *testing.T, baseURL string) Bundle {
 	t.Helper()
 	bundle, err := Render(Definition{Service: "checkout", Version: "0.1.0", ReplicaLabel: "instance", Objectives: []slo.Objective{{ID: "success", Name: "Request success", Target: .999, Window: 30 * 24 * time.Hour,
 		SLI:      slo.Ratio{Total: slo.Selector{Metric: "requests_total"}, Good: slo.Selector{Metric: "requests_total", Labels: map[string]string{"result": "success"}}},
-		Response: slo.Response{Owner: "service-team", RunbookURL: "https://example.com/runbook", FirstCheck: "Check requests", Escalation: "Notify the service on-call"}}}},
+		Response: slo.Response{RunbookURL: "https://example.com/runbook", FirstCheck: "Check requests", Escalation: "Notify the service on-call"}}}},
 		Target{Environment: "staging", URL: baseURL, FolderUID: "checkout", PrometheusUID: "prometheus", Scope: map[string]string{"service_name": "checkout", "environment": "staging"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return bundle
+	return resolvedFixture(t, bundle)
 }
 
 func TestRenderingIsDeterministicAndAlertsDoNotUseDashboardVariables(t *testing.T) {
@@ -154,7 +154,7 @@ func guardrailDefinition() Definition {
 		ID: "backlog", Name: "Queue backlog", Description: "Queued requests need attention.",
 		Query: `sum(queued_requests{${scope}})`, Source: "prometheus", Operator: "gt",
 		Threshold: 100, Pending: 2 * time.Minute, Severity: "warning",
-		Response: slo.Response{Owner: "service-team", RunbookURL: "https://example.com/runbook", FirstCheck: "Inspect queue age", Escalation: "Notify the service on-call"},
+		Response: slo.Response{RunbookURL: "https://example.com/runbook", FirstCheck: "Inspect queue age", Escalation: "Notify the service on-call"},
 	}}}
 }
 
@@ -208,6 +208,9 @@ func TestAlertDurationComparisonPreservesOtherFields(t *testing.T) {
 		{"removed dashboard reference", func(rule map[string]any) {
 			rule["annotations"].(map[string]any)["dashboard_url"] = "https://example.com/d/old"
 		}},
+		{"removed custom annotation", func(rule map[string]any) { rule["annotations"].(map[string]any)["guidance"] = "old guidance" }},
+		{"removed custom label", func(rule map[string]any) { rule["labels"].(map[string]any)["customer_tier"] = "premium" }},
+		{"removed receiver", func(rule map[string]any) { rule["notification_settings"] = map[string]any{"receiver": "old-sink"} }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			const content = `{"for":"120s","annotations":{"summary":"120s","for":"120s"},"labels":{"window":"120s","environment":"staging"},"data":[{"expr":"vector(120)","threshold":120}],"isPaused":true}`

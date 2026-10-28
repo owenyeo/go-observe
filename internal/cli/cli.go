@@ -32,11 +32,19 @@ func Run(ctx context.Context, args []string, input io.Reader, output io.Writer, 
 	versionFile := flags.String("version-file", "", "require the bundle version to match this file")
 	previous := flags.String("previous", "", "previous MAJOR.MINOR.PATCH version")
 	current := flags.String("current", "", "new MAJOR.MINOR.PATCH version")
+	configPath := flags.String("config", "", "deployment configuration file (normalize only)")
+	namespace := flags.String("namespace", "", "exact logical namespace (normalize with -config only)")
+	environment := flags.String("environment", "", "exact environment (normalize with -config only)")
 	if err := flags.Parse(args[1:]); err != nil {
 		return errors.New("invalid flags; use -bundle, -out, -allow-insecure or -version-file")
 	}
 	if flags.NArg() != 0 {
 		return errors.New("unexpected positional arguments")
+	}
+	if *configPath != "" || *namespace != "" || *environment != "" {
+		if command != "normalize" || *configPath == "" || *environment == "" {
+			return errors.New("deployment resolution requires normalize -config FILE -environment ID; -namespace must match the bundle")
+		}
 	}
 	if command == "version-check" {
 		return versionCheck(*previous, *current)
@@ -55,6 +63,21 @@ func Run(ctx context.Context, args []string, input io.Reader, output io.Writer, 
 	bundle, err := ReadBundle(input)
 	if err != nil {
 		return err
+	}
+	if *configPath != "" {
+		file, err := os.Open(*configPath)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		config, err := grafana.ReadDeploymentConfiguration(file)
+		if err != nil {
+			return err
+		}
+		bundle, err = config.Resolve(bundle, *namespace, *environment)
+		if err != nil {
+			return err
+		}
 	}
 	if *versionFile != "" {
 		content, err := os.ReadFile(*versionFile)

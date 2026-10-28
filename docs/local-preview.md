@@ -18,7 +18,8 @@ To inspect the example dashboard yourself:
 2. Open <http://127.0.0.1:8793> and sign in using the local example credentials.
 3. Create a folder with UID `checkout` and a local service-account token with edit
    permissions. Set `GRAFANA_TOKEN` privately in your terminal environment.
-4. Render the example bundle and run `observe diff`, then `observe apply`, adding
+4. Render the example definitions, resolve the flat deployment configuration,
+   and run `observe diff`, then `observe apply`, adding
    `-allow-insecure` for this loopback HTTP instance. Rules remain paused.
 5. Open the Checkout dashboard. Prometheus discovers the sample at
    `host.docker.internal:9090`; Linux Docker users need host networking or an
@@ -29,7 +30,7 @@ and at least two scrapes for counter rates; stopped services should show missing
 coverage rather than artificial healthy values.
 
 ```sh
-go run ./examples/monitoring -version "$(cat examples/monitoring/VERSION)" | go run ./cmd/observe normalize -out artifacts/staging.json
+go run ./examples/monitoring -version "$(cat examples/monitoring/VERSION)" | go run ./cmd/observe normalize -config examples/monitoring/publishing.json -environment staging -out artifacts/staging.json
 go run ./cmd/observe diff -bundle artifacts/staging.json -allow-insecure
 go run ./cmd/observe apply -bundle artifacts/staging.json -allow-insecure
 go run ./examples/promql-check -out artifacts/promql-test.json

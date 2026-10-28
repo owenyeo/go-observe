@@ -121,17 +121,25 @@ func (i *Instrumentation) Middleware(next http.Handler) http.Handler {
 			WriteHeader: func(next httpsnoop.WriteHeaderFunc) httpsnoop.WriteHeaderFunc {
 				return func(code int) {
 					next(code)
-					if code >= 200 && !wroteFinal {
+					// A protocol upgrade ends HTTP; other 1xx responses are interim.
+					if (code >= 200 || code == http.StatusSwitchingProtocols) && !wroteFinal {
 						status = code
 						wroteFinal = true
 					}
 				}
 			},
 			Write: func(next httpsnoop.WriteFunc) httpsnoop.WriteFunc {
-				return func(body []byte) (int, error) { n, err := next(body); wroteFinal = true; return n, err }
+				return func(body []byte) (int, error) {
+					n, err := next(body)
+					wroteFinal = true
+					return n, err
+				}
 			},
 			Flush: func(next httpsnoop.FlushFunc) httpsnoop.FlushFunc {
-				return func() { next(); wroteFinal = true }
+				return func() {
+					next()
+					wroteFinal = true
+				}
 			},
 			ReadFrom: func(next httpsnoop.ReadFromFunc) httpsnoop.ReadFromFunc {
 				return func(reader io.Reader) (int64, error) {

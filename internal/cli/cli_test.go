@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -29,7 +31,7 @@ func TestNormalizePreservesBundleAndDoesNotReadCredentials(t *testing.T) {
 	definition := grafana.Definition{Service: "checkout", Version: "0.1.0", Objectives: []slo.Objective{{
 		ID: "success", Name: "Success", Target: .99, Window: 24 * time.Hour,
 		SLI:      slo.Ratio{Total: slo.Selector{Metric: "requests_total"}, Good: slo.Selector{Metric: "requests_total", Labels: map[string]string{"result": "success"}}},
-		Response: slo.Response{Owner: "team", RunbookURL: "https://example.com/runbook", FirstCheck: "Inspect failures", Escalation: "Notify on-call"},
+		Response: slo.Response{RunbookURL: "https://example.com/runbook", FirstCheck: "Inspect failures", Escalation: "Notify on-call"},
 	}}}
 	bundle, err := grafana.Render(definition, grafana.Target{Environment: "staging", URL: "https://example.com", FolderUID: "checkout", PrometheusUID: "prometheus", Scope: map[string]string{"service_name": "checkout"}})
 	if err != nil {
@@ -56,6 +58,31 @@ func TestNormalizePreservesBundleAndDoesNotReadCredentials(t *testing.T) {
 	}
 	if !reflect.DeepEqual(original, normalized) {
 		t.Fatal("normalization changed the bundle")
+	}
+	configPath := filepath.Join(t.TempDir(), "publishing.json")
+	config := `[{"namespace":"","service":"checkout","environment":"staging","enableAlerts":true,"owner":"oncall","contactPoint":"local-sink"}]`
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	if err := Run(context.Background(), []string{"normalize", "-config", configPath, "-environment", "staging"}, bytes.NewReader(input), &output, getenv); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := ReadBundle(&output)
+	if err != nil || !resolved.Target.EnableAlerts || resolved.Alerts[0].IsPaused {
+		t.Fatalf("configuration was not resolved: %v", err)
+	}
+	for _, args := range [][]string{
+		{"normalize", "-config", configPath},
+		{"normalize", "-environment", "staging"},
+		{"normalize", "-config", configPath, "-environment", "production"},
+		{"normalize", "-config", configPath, "-environment", "staging", "-namespace", "commerce"},
+		{"diff", "-config", configPath, "-environment", "staging"},
+		{"apply", "-config", configPath, "-environment", "staging"},
+	} {
+		if err := Run(context.Background(), args, bytes.NewReader(input), io.Discard, getenv); err == nil {
+			t.Fatalf("invalid configuration flags accepted: %v", args)
+		}
 	}
 	if err := Run(context.Background(), []string{"render"}, bytes.NewReader(input), io.Discard, getenv); err == nil {
 		t.Fatal("misleading render command still accepted")

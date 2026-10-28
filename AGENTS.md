@@ -22,7 +22,7 @@ definitions. Read `README.md` and the examples before changing its public API.
 - Optional trace failures must leave the application serving. Export queues are
   bounded; preserve caller ownership when shutting providers down.
 - Supply Registerer/Gatherer together, backed by the same registry. Reserve
-  service_name/environment labels for the SDK's wrapper. AccessLogs is opt-in;
+  service_name/service_namespace/environment labels for the SDK's wrapper. AccessLogs is opt-in;
   tracing requires an explicit sample-ratio pointer and respects trusted parents.
 
 ## Define SLOs
@@ -75,6 +75,17 @@ definitions. Read `README.md` and the examples before changing its public API.
   recovery and a test destination before enabling production notifications.
 - Contact points and on-call schedules are deployment prerequisites. The SDK
   uses an explicit existing receiver and does not replace global routing policy.
+- Namespace groups services and environments. Match Config.Namespace,
+  Definition.Namespace and the service_namespace query scope. Target.GrafanaNamespace
+  remains Grafana's native API destination. Empty logical namespaces preserve old
+  identities; adding one requires a deliberate instrumentation/definition migration.
+- Deployment configuration is a flat list keyed by namespace/service/environment.
+  Reject duplicate tuples. Response guidance has no Owner field; configuration
+  alone supplies both the owner annotation and team label. Render leaves these
+  unresolved; publication requires ownership even for paused alerts.
+- Resolve deployment choices with normalize -config -namespace -environment;
+  config changes owner/team, pause state and receiver, never query scope or UIDs.
+  Diff/apply consume the reviewed resolved artifact. No incident worker is needed.
 
 ## Review and release
 
@@ -92,6 +103,11 @@ definitions. Read `README.md` and the examples before changing its public API.
   in their configured folder. Ownership collisions must fail before writes.
 - Promote the tested, immutable release artifact to production. A second version
   bump is not required for promotion. Roll back by applying a prior artifact.
+- For configuration-only changes, rerun release (staging) or promote (production)
+  with the original successful release-run-id to reuse retained definitions.
+  Prepare the diff before the GitHub environment gate and apply its checksummed
+  resolved artifact. Keep read credentials available to preparation and write
+  credentials in the protected apply job. A receipt is retained only after readback.
 - Build the publisher and definitions from the consuming module's dependency
   graph. Do not choose a separate SDK ref for publishing. Use observe normalize
   to format a rendered bundle; rendering belongs to the Go definition program.

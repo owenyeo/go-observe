@@ -185,6 +185,13 @@ func (c *Client) Diff(ctx context.Context, bundle Bundle) ([]Change, error) {
 	if err := bundle.Validate(); err != nil {
 		return nil, err
 	}
+	// Rendered definitions are valid offline before deployment choices exist.
+	// Publication always needs resolved ownership, even while rules are paused.
+	for _, rule := range bundle.Alerts {
+		if strings.TrimSpace(rule.Annotations["owner"]) == "" || rule.Labels["team"] != rule.Annotations["owner"] {
+			return nil, errors.New("resolve deployment configuration before publishing: each alert needs a consistent owner and team")
+		}
+	}
 	if strings.TrimSuffix(bundle.Target.URL, "/") != c.baseURL {
 		return nil, errors.New("bundle destination differs from configured Grafana URL")
 	}
@@ -224,9 +231,15 @@ func (c *Client) Diff(ctx context.Context, bundle Bundle) ([]Change, error) {
 		}
 		configured := false
 		for _, receiver := range receivers {
-			if receiver.Name == bundle.Target.ContactPoint && receiver.Type != "" && !receiver.DisableResolveMessage {
-				configured = true
+			if receiver.Name != bundle.Target.ContactPoint {
+				continue
 			}
+			// A contact point may contain several integrations. Every selected
+			// integration must be usable and send recovery notifications.
+			if strings.TrimSpace(receiver.Type) == "" || receiver.DisableResolveMessage {
+				return nil, errors.New("contact point has an integration without recovery notifications")
+			}
+			configured = true
 		}
 		if !configured {
 			return nil, errors.New("contact point needs an integration with recovery notifications enabled")
@@ -257,7 +270,7 @@ func (c *Client) Diff(ctx context.Context, bundle Bundle) ([]Change, error) {
 		if err != nil {
 			return nil, err
 		}
-		if found && (folder != bundle.Target.FolderUID || !hasDashboardOwner(current, "go-observe:"+owner(bundle.Service, bundle.Target.Environment))) {
+		if found && (folder != bundle.Target.FolderUID || !hasDashboardOwner(current, "go-observe:"+owner(bundle.Namespace, bundle.Service, bundle.Target.Environment))) {
 			return nil, fmt.Errorf("dashboard %s belongs to a different folder or owner", uid)
 		}
 		before, _ := json.Marshal(current)
@@ -280,7 +293,7 @@ func (c *Client) Diff(ctx context.Context, bundle Bundle) ([]Change, error) {
 		}
 		if found {
 			labels, _ := current["labels"].(map[string]any)
-			if current["folderUID"] != bundle.Target.FolderUID || labels["go_observe_owner"] != owner(bundle.Service, bundle.Target.Environment) {
+			if current["folderUID"] != bundle.Target.FolderUID || labels["go_observe_owner"] != owner(bundle.Namespace, bundle.Service, bundle.Target.Environment) {
 				return nil, fmt.Errorf("alert %s belongs to a different folder or owner", rule.UID)
 			}
 		}
@@ -428,12 +441,15 @@ func alertContainsContent(actual, expected map[string]any) bool {
 			expected["for"] = actualPending
 		}
 	}
-	// This optional annotation belongs to the definition. Removing its target
-	// must clear the old link instead of treating it as a server-added default.
-	actualAnnotations, _ := actual["annotations"].(map[string]any)
-	expectedAnnotations, _ := expected["annotations"].(map[string]any)
-	if !reflect.DeepEqual(actualAnnotations["dashboard_url"], expectedAnnotations["dashboard_url"]) {
-		return false
+	// Labels, annotations and routing are authored state. Subset comparison
+	// would silently keep removed owners, guidance or receivers. Grafana's
+	// top-level bookkeeping and query model defaults remain tolerated below.
+	for _, field := range []string{"labels", "annotations", "notification_settings"} {
+		actualFields, _ := actual[field].(map[string]any)
+		expectedFields, _ := expected[field].(map[string]any)
+		if len(actualFields) != len(expectedFields) || (len(expectedFields) > 0 && !reflect.DeepEqual(actualFields, expectedFields)) {
+			return false
+		}
 	}
 	return containsContent(actual, expected)
 }

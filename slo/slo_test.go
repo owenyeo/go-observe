@@ -66,7 +66,7 @@ func TestLatencySupportsBothIntegerBucketEncodings(t *testing.T) {
 func TestBurnPoliciesScaleWithWindowAndRejectInvalidTargets(t *testing.T) {
 	objective := Objective{ID: "success", Name: "Success", Target: .999, Window: 30 * 24 * time.Hour,
 		SLI:      Ratio{Total: Selector{Metric: "requests_total"}, Good: Selector{Metric: "requests_total", Labels: map[string]string{"result": "success"}}},
-		Response: Response{Owner: "team", RunbookURL: "https://example.com/runbook", FirstCheck: "Check", Escalation: "Escalate"}}
+		Response: Response{RunbookURL: "https://example.com/runbook", FirstCheck: "Check", Escalation: "Escalate"}}
 	if err := objective.Validate(); err != nil {
 		t.Fatal(err)
 	}

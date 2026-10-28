@@ -47,7 +47,7 @@ func main() {
 	// Run the dashboard's actual diagnostic query through Prometheus: template
 	// braces belong to a quoted route value, not a selector insertion point.
 	diagnostic := objective
-	diagnostic.Response = slo.Response{Owner: "team", RunbookURL: "https://example.com/runbook", FirstCheck: "Inspect failures", Escalation: "Notify on-call"}
+	diagnostic.Response = slo.Response{RunbookURL: "https://example.com/runbook", FirstCheck: "Inspect failures", Escalation: "Notify on-call"}
 	diagnostic.SLI.Total.Labels = map[string]string{"route": "/orders/{id}"}
 	diagnostic.SLI.Good.Labels = map[string]string{"route": "/orders/{id}", "result": "success"}
 	bundle, err := grafana.Render(grafana.Definition{Service: "checkout", Version: "0.1.0", ReplicaLabel: "instance", Objectives: []slo.Objective{diagnostic}}, grafana.Target{Environment: "staging", URL: "https://example.com", FolderUID: "checkout", PrometheusUID: "prometheus", Scope: scope})

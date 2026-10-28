@@ -84,6 +84,68 @@ func TestLocalGrafana(t *testing.T) {
 			t.Fatalf("retained %s is not idempotent", change.Kind)
 		}
 	}
+	// Real receiver validation and readback, with destinations confined to this
+	// disposable Grafana process. No Slack, email, phone or external webhook.
+	for _, name := range []string{"sdk-local-one", "sdk-local-two"} {
+		if code := request("POST", "/api/v1/provisioning/contact-points", map[string]any{
+			"uid": name, "name": name, "type": "webhook", "disableResolveMessage": false,
+			"settings": map[string]any{"url": "http://127.0.0.1:3000/api/health", "httpMethod": "GET"},
+		}, nil); code != 202 {
+			t.Fatalf("local contact point: HTTP %d", code)
+		}
+		defer request("DELETE", "/api/v1/provisioning/contact-points/"+name, nil, nil)
+	}
+	// Pause and remove routing before deleting the local contact points, even
+	// when a later assertion fails. Grafana refuses to delete an in-use receiver.
+	configuredBundle := resolvedFixture(t, namespacedFixture(t, "commerce", bundle.Target))
+	otherNamespace := resolvedFixture(t, namespacedFixture(t, "support", bundle.Target))
+	for _, initial := range []Bundle{configuredBundle, otherNamespace} {
+		if _, err := client.Apply(context.Background(), initial); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() { _, _ = client.Apply(context.Background(), configuredBundle) }()
+	for _, state := range []struct {
+		enabled  bool
+		receiver string
+	}{{true, "sdk-local-one"}, {true, "sdk-local-two"}, {false, ""}} {
+		resolved, err := deploymentConfig(t, configuredBundle.Namespace, state.enabled, state.receiver).Resolve(configuredBundle, configuredBundle.Namespace, "staging")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Apply(context.Background(), resolved); err != nil {
+			t.Fatal(err)
+		}
+		changes, err := client.Diff(context.Background(), resolved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, change := range changes {
+			if change.Action != "unchanged" {
+				t.Fatalf("resolved publication not idempotent: %s %s", change.Kind, change.Action)
+			}
+		}
+		otherChanges, err := client.Diff(context.Background(), otherNamespace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, change := range otherChanges {
+			if change.Action != "unchanged" {
+				t.Fatal("configuration changed the same service in another namespace")
+			}
+		}
+	}
+	// Removing arbitrary SDK-authored metadata must clear it in Grafana too.
+	bundle.Alerts[0].Labels["customer_tier"] = "test"
+	bundle.Alerts[0].Annotations["custom_guidance"] = "old instruction"
+	if _, err := client.Apply(context.Background(), bundle); err != nil {
+		t.Fatal(err)
+	}
+	delete(bundle.Alerts[0].Labels, "customer_tier")
+	delete(bundle.Alerts[0].Annotations, "custom_guidance")
+	if _, err := client.Apply(context.Background(), bundle); err != nil {
+		t.Fatal(err)
+	}
 	// A guardrail may link to an existing dashboard without publishing it.
 	// Real Grafana canonicalizes seconds to minutes on both create and update.
 	definition := guardrailDefinition()
@@ -107,6 +169,7 @@ func TestLocalGrafana(t *testing.T) {
 		if len(guardrails.Dashboards) != 0 {
 			t.Fatal("existing dashboard reference became a publication resource")
 		}
+		guardrails = resolvedFixture(t, guardrails)
 		changes, err := client.Apply(context.Background(), guardrails)
 		if err != nil {
 			t.Fatal(err)

@@ -14,15 +14,15 @@ import (
 
 func main() {
 	environment := flag.String("environment", "staging", "target environment")
+	namespace := flag.String("namespace", "", "logical service namespace; empty preserves legacy IDs")
 	version := flag.String("version", "", "monitoring release version (required)")
-	active := flag.Bool("enable-alerts", false, "activate after a test contact point is configured")
 	flag.Parse()
-	response := slo.Response{Owner: "checkout-team", RunbookURL: "https://example.com/runbooks/checkout", FirstCheck: "Compare failed requests with dependency errors and recent releases.", Escalation: "Notify the service on-call; involve the incident lead for widespread customer impact."}
+	response := slo.Response{RunbookURL: "https://example.com/runbooks/checkout", FirstCheck: "Compare failed requests with dependency errors and recent releases.", Escalation: "Notify the service on-call; involve the incident lead for widespread customer impact."}
 	latency, err := slo.Latency(slo.Selector{Metric: "http_server_request_duration_seconds", Labels: map[string]string{"route": "GET /work"}}, .2, []float64{.005, .01, .025, .05, .1, .2, .3, .5, 1, 2, 5, 10})
 	if err != nil {
 		fail(err)
 	}
-	definition := grafana.Definition{Service: "checkout", Version: *version, ReplicaLabel: "instance",
+	definition := grafana.Definition{Namespace: *namespace, Service: "checkout", Version: *version, ReplicaLabel: "instance",
 		Objectives: []slo.Objective{
 			{ID: "request-success", Name: "Request success", Description: "Completed work requests excluding client errors; explicit application failures count as unsuccessful. Process/edge failures require a separate availability probe.", Target: .999, Window: 30 * 24 * time.Hour, Response: response,
 				SLI: slo.Ratio{Total: slo.Selector{Metric: "http_server_requests_total", Labels: map[string]string{"route": "GET /work"}, Regex: map[string]string{"status": "2..|3..|5.."}}, Good: slo.Selector{Metric: "http_server_requests_total", Labels: map[string]string{"route": "GET /work", "outcome": "success"}, Regex: map[string]string{"status": "2..|3.."}}}},
@@ -35,7 +35,14 @@ func main() {
 	if url == "" {
 		url = "http://127.0.0.1:8793"
 	}
-	bundle, err := grafana.Render(definition, grafana.Target{Environment: *environment, URL: url, FolderUID: "checkout", PrometheusUID: "prometheus", ContactPoint: os.Getenv("GRAFANA_CONTACT_POINT"), EnableAlerts: *active, Scope: map[string]string{"service_name": "checkout", "environment": *environment}})
+	scope := map[string]string{"service_name": "checkout", "environment": *environment}
+	if *namespace != "" {
+		scope["service_namespace"] = *namespace
+	}
+	bundle, err := grafana.Render(definition, grafana.Target{
+		Environment: *environment, URL: url, FolderUID: "checkout", PrometheusUID: "prometheus",
+		Scope: scope,
+	})
 	if err != nil {
 		fail(err)
 	}

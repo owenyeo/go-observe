@@ -26,6 +26,9 @@ import (
 // Config is explicit application configuration. No environment variables are read.
 // The caller decides where metrics are served and which destinations are trusted.
 type Config struct {
+	// Namespace groups services; it becomes service_namespace in metrics and
+	// service.namespace in owned trace resources. Empty preserves existing labels.
+	Namespace   string
 	Service     string
 	Environment string
 	Version     string
@@ -74,6 +77,9 @@ func New(ctx context.Context, cfg Config) (*Telemetry, error) {
 	if len(cfg.Environment) > 128 {
 		return nil, errors.New("environment must contain at most 128 characters")
 	}
+	if len(cfg.Namespace) > 128 || (cfg.Namespace != "" && strings.TrimSpace(cfg.Namespace) == "") {
+		return nil, errors.New("namespace must contain 1–128 nonblank characters when supplied")
+	}
 	if (cfg.Registerer == nil) != (cfg.Gatherer == nil) {
 		return nil, errors.New("registerer and gatherer must be supplied together")
 	}
@@ -89,6 +95,10 @@ func New(ctx context.Context, cfg Config) (*Telemetry, error) {
 	labels := prometheus.Labels{"service_name": cfg.Service}
 	if cfg.Environment != "" {
 		labels["environment"] = cfg.Environment
+	}
+	if cfg.Namespace != "" {
+		labels["service_namespace"] = cfg.Namespace
+		logger = logger.With("namespace", cfg.Namespace)
 	}
 	t := &Telemetry{gatherer: gatherer, registerer: prometheus.WrapRegistererWith(labels, registerer),
 		logger: logger.With("service", cfg.Service, "environment", cfg.Environment), provider: noop.NewTracerProvider()}
@@ -159,6 +169,9 @@ func newProvider(ctx context.Context, cfg Config, failures prometheus.Counter) (
 	}
 	attributes := append([]attribute.KeyValue{}, cfg.ResourceAttributes...)
 	attributes = append(attributes, attribute.String("service.name", cfg.Service), attribute.String("service.version", cfg.Version))
+	if cfg.Namespace != "" {
+		attributes = append(attributes, attribute.String("service.namespace", cfg.Namespace))
+	}
 	if cfg.Environment != "" {
 		attributes = append(attributes, attribute.String("deployment.environment.name", cfg.Environment))
 	}
@@ -187,7 +200,7 @@ func (e *safeExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnl
 // Tracer creates instrumentation scopes without touching the global provider.
 func (t *Telemetry) Tracer(scope string) trace.Tracer { return t.provider.Tracer(scope) }
 
-// Registerer applies service_name and optional environment labels to new metrics.
+// Registerer applies service_name and optional service_namespace/environment labels.
 // Metrics registered through it must not already declare those labels.
 func (t *Telemetry) Registerer() prometheus.Registerer { return t.registerer }
 

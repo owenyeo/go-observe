@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -15,6 +16,22 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
+
+func TestUpgradeAndInterimResponseStatus(t *testing.T) {
+	for _, codes := range [][]int{{101}, {100, 201}, {103, 100, 503}} {
+		i, registry, _ := setup(t)
+		i.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Pattern = "GET /work"
+			for _, code := range codes {
+				w.WriteHeader(code)
+			}
+		})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/work", nil))
+		want := strconv.Itoa(codes[len(codes)-1])
+		if metric(t, registry, "http_server_requests_total", map[string]string{"status": want}) != 1 {
+			t.Fatalf("response sequence %v did not record final status %s", codes, want)
+		}
+	}
+}
 
 func setup(t *testing.T) (*Instrumentation, *prometheus.Registry, *bytes.Buffer) {
 	t.Helper()

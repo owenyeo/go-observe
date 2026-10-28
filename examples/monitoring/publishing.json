@@ -1,0 +1,26 @@
+[
+  {
+    "namespace": "",
+    "service": "checkout",
+    "environment": "staging",
+    "enableAlerts": false,
+    "owner": "checkout-oncall",
+    "contactPoint": ""
+  },
+  {
+    "namespace": "commerce",
+    "service": "checkout",
+    "environment": "staging",
+    "enableAlerts": false,
+    "owner": "checkout-oncall",
+    "contactPoint": ""
+  },
+  {
+    "namespace": "commerce",
+    "service": "checkout",
+    "environment": "production",
+    "enableAlerts": false,
+    "owner": "checkout-oncall",
+    "contactPoint": ""
+  }
+]

@@ -28,7 +28,7 @@ func main() {
 				Total: slo.Selector{Metric: "web_http_requests_total", Labels: map[string]string{"traffic": "request"}, Regex: map[string]string{"status": "2..|3..|5.."}},
 				Good:  slo.Selector{Metric: "web_http_requests_total", Labels: map[string]string{"traffic": "request", "outcome": "success"}, Regex: map[string]string{"status": "2..|3.."}},
 			},
-			Response: slo.Response{Owner: "web-team", RunbookURL: "https://example.com/runbooks/web", FirstCheck: "Compare 5xx and application_error events with dependency failures.", Escalation: "Contact the service on-call and assess affected customers."},
+			Response: slo.Response{RunbookURL: "https://example.com/runbooks/web", FirstCheck: "Compare 5xx and application_error events with dependency failures.", Escalation: "Contact the service on-call and assess affected customers."},
 		}},
 	}
 	// Replace bindings with the consuming service's reviewed environment settings.

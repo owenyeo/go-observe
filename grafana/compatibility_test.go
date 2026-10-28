@@ -65,7 +65,7 @@ func TestReplicaQueriesPreserveBracesInRouteValues(t *testing.T) {
 	definition := Definition{Service: "checkout", Version: "0.1.0", ReplicaLabel: "instance", Objectives: []slo.Objective{{
 		ID: "success", Name: "Request success", Target: .999, Window: 30 * 24 * time.Hour,
 		SLI:      slo.Ratio{Total: slo.Selector{Metric: "requests_total", Labels: map[string]string{"route": "/orders/{id}"}}, Good: slo.Selector{Metric: "requests_total", Labels: map[string]string{"route": "/orders/{id}", "result": "success"}}},
-		Response: slo.Response{Owner: "team", RunbookURL: "https://example.com/runbook", FirstCheck: "Inspect errors", Escalation: "Notify on-call"},
+		Response: slo.Response{RunbookURL: "https://example.com/runbook", FirstCheck: "Inspect errors", Escalation: "Notify on-call"},
 	}}}
 	bundle, err := Render(definition, Target{Environment: "staging", URL: "https://example.com", FolderUID: "checkout", PrometheusUID: "prometheus", Scope: map[string]string{"environment": "staging"}})
 	if err != nil {
@@ -100,12 +100,16 @@ func nativeFixture(t *testing.T, target Target) Bundle {
 
 func TestNativeDashboardScopeAndIdentity(t *testing.T) {
 	target := fixture(t, "https://example.com").Target
-	target.Namespace = "stacks-123"
+	target.GrafanaNamespace = "stacks-123"
 	bundle := nativeFixture(t, target)
+	encoded, err := json.Marshal(bundle.Target)
+	if err != nil || !strings.Contains(string(encoded), `"grafanaNamespace":"stacks-123"`) || strings.Contains(string(encoded), `"namespace":`) {
+		t.Fatal("Grafana API namespace was serialized as the logical namespace")
+	}
 	var resource map[string]any
 	_ = json.Unmarshal(bundle.Dashboards[0], &resource)
 	document, err := parseDashboard(resource)
-	if err != nil || document.namespace() != target.Namespace || document.folder() != target.FolderUID {
+	if err != nil || document.namespace() != target.GrafanaNamespace || document.folder() != target.FolderUID {
 		t.Fatalf("native target not retained: %v", err)
 	}
 	document.metadata()["namespace"] = "other"

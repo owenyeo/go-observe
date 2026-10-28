@@ -31,7 +31,7 @@ func run(logger *slog.Logger) error {
 	if environment == "" {
 		environment = "staging"
 	}
-	config := telemetry.Config{Service: "checkout", Environment: environment, Version: "example", Logger: logger}
+	config := telemetry.Config{Namespace: os.Getenv("APP_NAMESPACE"), Service: "checkout", Environment: environment, Version: "example", Logger: logger}
 	if endpoint := os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"); endpoint != "" {
 		config.Trace = &telemetry.TraceConfig{Endpoint: endpoint, SampleRatio: new(float64(.1))}
 	}

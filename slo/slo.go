@@ -146,9 +146,9 @@ func (r Ratio) Queries(window time.Duration, scope map[string]string) (total, go
 }
 
 // Response describes what the responder should do, independent of any company's
-// incident priority numbering. Escalation is guidance; Grafana routes notifications.
+// incident priority numbering. Deployment configuration supplies the owner.
+// Escalation is guidance; Grafana routes notifications.
 type Response struct {
-	Owner      string
 	RunbookURL string
 	FirstCheck string
 	Escalation string
@@ -224,10 +224,10 @@ func (o Objective) Validate() error {
 	return nil
 }
 
-// Validate requires actionable owner, runbook and escalation guidance.
+// Validate requires actionable runbook and escalation guidance.
 func (r Response) Validate() error {
-	if r.Owner == "" || r.RunbookURL == "" || r.FirstCheck == "" || r.Escalation == "" {
-		return errors.New("response needs owner, runbook URL, first check and escalation guidance")
+	if r.RunbookURL == "" || r.FirstCheck == "" || r.Escalation == "" {
+		return errors.New("response needs runbook URL, first check and escalation guidance")
 	}
 	if !strings.HasPrefix(r.RunbookURL, "https://") && !strings.HasPrefix(r.RunbookURL, "http://") {
 		return errors.New("runbook must be an HTTP(S) URL")
