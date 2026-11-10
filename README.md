@@ -31,7 +31,7 @@ their own monitoring version, independently of the SDK's Git tag and `VERSION`.
 ## Install
 
 ```sh
-go get github.com/owenyeo/go-observe@v0.1.2
+go get github.com/owenyeo/go-observe@v0.1.3
 ```
 
 While this repository is private, configure Git authentication and
@@ -249,6 +249,23 @@ This is a CI-owned file parsed with the standard JSON decoder. Unknown settings,
 missing ownership/activation decisions and duplicate tuples fail validation.
 Owner and contact-point names refer to teams and existing Grafana receivers;
 credentials and recipient details stay in Grafana.
+
+To use the native notification policy tree, set `"routingMode": "policy"` and
+leave `contactPoint` empty. Before enabling, export the existing Grafana tree
+from `GET /api/v1/provisioning/policies` into a review artifact. Verify the
+intended service/environment matchers, route order, recipients, grouping and
+NoData/Error and recovery handling. Put the output of
+`observe policy-fingerprint < reviewed-policy.json` in `policyFingerprint`.
+The prepare and apply credentials both need permission to read that policy.
+The fingerprint covers the full policy response, including metadata such as
+provenance. After any policy edit or fingerprint mismatch, export and review
+the current response, then rerun `observe policy-fingerprint` to update the
+deployment configuration. Reviewers still confirm that the policy matches the
+service's alert labels and routes them as intended.
+
+Apply checks the live policy again during preflight, even if a prior diff
+passed. A policy edit after that check can still affect routing during apply.
+The SDK never writes notification policies.
 
 ```sh
 mkdir -p artifacts

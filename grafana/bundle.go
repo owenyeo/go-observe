@@ -25,9 +25,11 @@ type Target struct {
 	Scope         map[string]string `json:"scope"`
 	// ContactPoint and EnableAlerts are resolved publication state; leave them
 	// unset when calling Render and supply them through deployment configuration.
-	ContactPoint     string `json:"contactPoint,omitempty"`
-	EnableAlerts     bool   `json:"enableAlerts"`
-	GrafanaNamespace string `json:"grafanaNamespace,omitempty"` // native dashboard API namespace; otherwise use the resource's namespace.
+	ContactPoint      string `json:"contactPoint,omitempty"`
+	EnableAlerts      bool   `json:"enableAlerts"`
+	RoutingMode       string `json:"routingMode,omitempty"`
+	PolicyFingerprint string `json:"policyFingerprint,omitempty"`
+	GrafanaNamespace  string `json:"grafanaNamespace,omitempty"` // native dashboard API namespace; otherwise use the resource's namespace.
 }
 
 // Bundle contains no credentials and is the artifact reviewed/promoted by CI.
@@ -93,6 +95,9 @@ func (b Bundle) Validate() error {
 	if len(b.Dashboards)+len(b.Alerts) == 0 {
 		return errors.New("empty monitoring bundle")
 	}
+	if err := validateRouting(b.Target.RoutingMode, b.Target.ContactPoint, b.Target.PolicyFingerprint, b.Target.EnableAlerts && len(b.Alerts) > 0); err != nil {
+		return err
+	}
 	seen := map[string]bool{}
 	for _, raw := range b.Dashboards {
 		var dashboard map[string]any
@@ -137,7 +142,10 @@ func (b Bundle) Validate() error {
 		if rule.IsPaused == b.Target.EnableAlerts {
 			return errors.New("alert activation differs from bundle target")
 		}
-		if !rule.IsPaused && (b.Target.ContactPoint == "" || rule.NotificationSettings["receiver"] != b.Target.ContactPoint) {
+		if b.Target.RoutingMode == RoutingPolicy && len(rule.NotificationSettings) != 0 {
+			return errors.New("policy-routed alert cannot set direct notification settings")
+		}
+		if !rule.IsPaused && b.Target.RoutingMode != RoutingPolicy && rule.NotificationSettings["receiver"] != b.Target.ContactPoint {
 			return errors.New("active alert needs the declared contact point")
 		}
 		if !rule.IsPaused && (strings.TrimSpace(rule.Annotations["owner"]) == "" || rule.Labels["team"] != rule.Annotations["owner"]) {

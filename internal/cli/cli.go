@@ -21,9 +21,24 @@ import (
 // caller explicitly asks for network access with diff or apply.
 func Run(ctx context.Context, args []string, input io.Reader, output io.Writer, getenv func(string) string) error {
 	if len(args) == 0 {
-		return errors.New("usage: observe normalize|validate|diff|apply|version-check")
+		return errors.New("usage: observe normalize|validate|diff|apply|version-check|policy-fingerprint")
 	}
 	command := args[0]
+	if command == "policy-fingerprint" {
+		if len(args) != 1 {
+			return errors.New("usage: observe policy-fingerprint < reviewed-policy.json")
+		}
+		policy, err := io.ReadAll(input)
+		if err != nil {
+			return err
+		}
+		fingerprint, err := grafana.PolicyFingerprint(policy)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(output, fingerprint)
+		return err
+	}
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	bundlePath := flags.String("bundle", "-", "bundle JSON file, or - for stdin")

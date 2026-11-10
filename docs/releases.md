@@ -1,10 +1,16 @@
-# Monitoring releases — SDK 0.1.2
+# Monitoring releases — SDK 0.1.3
 
 The service owns its Go definitions and `observability/VERSION`. Definitions fix
 queries, thresholds, runbooks, IDs and environment-specific destinations. Shared
 SDK deployment configuration selects pause state, human owner/team and an existing
 Grafana receiver. Neither requires an incident worker. Application instrumentation
 and collector discovery still follow the service's normal deployment process.
+
+## 0.1.3 release notes
+
+- Enabled rules can opt into Grafana policy routing with a reviewed policy
+  fingerprint. Publication checks the tree before writes and preserves existing
+  alert IDs, ownership validation, and direct contact point defaults.
 
 ## 0.1.2 release notes and migration
 

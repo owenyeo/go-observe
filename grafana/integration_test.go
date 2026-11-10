@@ -264,4 +264,63 @@ func TestLocalGrafana(t *testing.T) {
 	if err != nil || changes[0].Action != "unchanged" {
 		t.Fatalf("removed native override not retained: %v", err)
 	}
+
+	// Use the disposable instance's real policy API. A production publisher
+	// reads this tree but never replaces it.
+	const policyAPI = "/api/v1/provisioning/policies"
+	const receiver = "sdk-policy-test"
+	if code := request("POST", "/api/v1/provisioning/contact-points", map[string]any{
+		"name": receiver, "type": "email", "settings": map[string]string{"addresses": "example@example.invalid"},
+	}, nil); code != 202 && code != 201 {
+		t.Fatalf("create disposable receiver: HTTP %d", code)
+	}
+	var policy map[string]any
+	if code := request("GET", policyAPI, nil, &policy); code != 200 {
+		t.Fatalf("get local notification policy: HTTP %d", code)
+	}
+	policy["routes"] = []map[string]any{{
+		"receiver": receiver, "object_matchers": [][]string{{"environment", "=", "staging"}, {"service_name", "=", bundle.Service}},
+	}}
+	if code := request("PUT", policyAPI, policy, nil); code != 202 && code != 200 {
+		t.Fatalf("set local notification policy: HTTP %d", code)
+	}
+	var reviewed json.RawMessage
+	if code := request("GET", policyAPI, nil, &reviewed); code != 200 {
+		t.Fatalf("read back local notification policy: HTTP %d", code)
+	}
+	fingerprint, err := PolicyFingerprint(reviewed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := deploymentConfig(t, "", true, receiver)
+	direct, err := config.Resolve(bundle, "", "staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Apply(context.Background(), direct); err != nil {
+		t.Fatal(err)
+	}
+	config[0].ContactPoint = ""
+	config[0].RoutingMode = RoutingPolicy
+	config[0].PolicyFingerprint = fingerprint
+	policyBundle, err := config.Resolve(bundle, "", "staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := policyBundle
+	wrong.Target.PolicyFingerprint = fmt.Sprintf("%064x", 0)
+	if _, err := client.Apply(context.Background(), wrong); err == nil {
+		t.Fatal("unreviewed policy reached apply")
+	}
+	var retained Rule
+	if code := request("GET", "/api/v1/provisioning/alert-rules/"+bundle.Alerts[0].UID, nil, &retained); code != 200 || retained.NotificationSettings["receiver"] != receiver {
+		t.Fatalf("wrong fingerprint altered the direct receiver: HTTP %d", code)
+	}
+	if _, err := client.Apply(context.Background(), policyBundle); err != nil {
+		t.Fatal(err)
+	}
+	retained = Rule{}
+	if code := request("GET", "/api/v1/provisioning/alert-rules/"+bundle.Alerts[0].UID, nil, &retained); code != 200 || retained.IsPaused || len(retained.NotificationSettings) != 0 {
+		t.Fatalf("native policy mode was not retained: HTTP %d", code)
+	}
 }
