@@ -220,7 +220,19 @@ func (c *Client) Diff(ctx context.Context, bundle Bundle) ([]Change, error) {
 			return nil, fmt.Errorf("alert provisioning capability check failed: %w", err)
 		}
 	}
-	if bundle.Target.EnableAlerts {
+	if bundle.Target.EnableAlerts && bundle.Target.RoutingMode == RoutingPolicy {
+		var policy json.RawMessage
+		if _, err := c.request(ctx, "GET", "/api/v1/provisioning/policies", nil, &policy, false); err != nil {
+			return nil, fmt.Errorf("notification policy verification failed: %w", err)
+		}
+		fingerprint, err := PolicyFingerprint(policy)
+		if err != nil {
+			return nil, fmt.Errorf("notification policy verification failed: %w", err)
+		}
+		if fingerprint != bundle.Target.PolicyFingerprint {
+			return nil, errors.New("Grafana notification policy differs from the reviewed fingerprint")
+		}
+	} else if bundle.Target.EnableAlerts {
 		var receivers []struct {
 			Name                  string `json:"name"`
 			Type                  string `json:"type"`

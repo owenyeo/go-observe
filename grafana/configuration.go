@@ -19,12 +19,14 @@ type DeploymentConfiguration []Deployment
 // pointer so omission cannot silently enable or pause rules. ContactPoint names
 // an existing Grafana receiver; credentials and recipient details stay in Grafana.
 type Deployment struct {
-	Namespace    string `json:"namespace"`
-	Service      string `json:"service"`
-	Environment  string `json:"environment"`
-	EnableAlerts *bool  `json:"enableAlerts"`
-	Owner        string `json:"owner"`
-	ContactPoint string `json:"contactPoint"`
+	Namespace         string `json:"namespace"`
+	Service           string `json:"service"`
+	Environment       string `json:"environment"`
+	EnableAlerts      *bool  `json:"enableAlerts"`
+	Owner             string `json:"owner"`
+	ContactPoint      string `json:"contactPoint"`
+	RoutingMode       string `json:"routingMode,omitempty"`
+	PolicyFingerprint string `json:"policyFingerprint,omitempty"`
 }
 
 // ReadDeploymentConfiguration reads a CI-owned file and rejects unknown settings
@@ -60,8 +62,8 @@ func (c DeploymentConfiguration) Validate() error {
 		if entry.EnableAlerts == nil || strings.TrimSpace(entry.Owner) == "" {
 			return fmt.Errorf("deployment %q needs an explicit enableAlerts decision and owner", key)
 		}
-		if *entry.EnableAlerts && strings.TrimSpace(entry.ContactPoint) == "" {
-			return fmt.Errorf("enabled deployment %q needs a contactPoint", key)
+		if err := validateRouting(entry.RoutingMode, entry.ContactPoint, entry.PolicyFingerprint, *entry.EnableAlerts); err != nil {
+			return fmt.Errorf("deployment %q: %w", key, err)
 		}
 	}
 	return nil
@@ -95,6 +97,8 @@ func (c DeploymentConfiguration) Resolve(bundle Bundle, namespace, environment s
 	resolved := bundle
 	resolved.Target.EnableAlerts = *settings.EnableAlerts
 	resolved.Target.ContactPoint = settings.ContactPoint
+	resolved.Target.RoutingMode = settings.RoutingMode
+	resolved.Target.PolicyFingerprint = settings.PolicyFingerprint
 	resolved.Alerts = append([]Rule(nil), bundle.Alerts...)
 	for index := range resolved.Alerts {
 		rule := &resolved.Alerts[index]

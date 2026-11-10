@@ -31,7 +31,7 @@ their own monitoring version, independently of the SDK's Git tag and `VERSION`.
 ## Install
 
 ```sh
-go get github.com/owenyeo/go-observe@v0.1.2
+go get github.com/owenyeo/go-observe@v0.1.3
 ```
 
 While this repository is private, configure Git authentication and
@@ -249,6 +249,16 @@ This is a CI-owned file parsed with the standard JSON decoder. Unknown settings,
 missing ownership/activation decisions and duplicate tuples fail validation.
 Owner and contact-point names refer to teams and existing Grafana receivers;
 credentials and recipient details stay in Grafana.
+
+To use the native notification policy tree, set `"routingMode": "policy"` and
+leave `contactPoint` empty. Before enabling, export the existing Grafana tree
+from `GET /api/v1/provisioning/policies` into a review artifact. Verify the
+intended service/environment matchers, route order, recipients, grouping and
+NoData/Error and recovery handling. Put the output of
+`observe policy-fingerprint < reviewed-policy.json` in `policyFingerprint`.
+The prepare and apply credentials both need permission to read that policy.
+Diff and apply reject changes to the reviewed tree. Review even unrelated tree
+edits before updating the fingerprint. The SDK never writes notification policies.
 
 ```sh
 mkdir -p artifacts

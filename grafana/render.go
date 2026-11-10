@@ -90,7 +90,7 @@ func Render(def Definition, target Target) (Bundle, error) {
 	if def.OverviewUID != "" && !resourceID.MatchString(def.OverviewUID) {
 		return Bundle{}, errors.New("overview UID must contain 1–40 letters, digits, underscores or hyphens")
 	}
-	if target.EnableAlerts || target.ContactPoint != "" {
+	if target.EnableAlerts || target.ContactPoint != "" || target.RoutingMode != "" || target.PolicyFingerprint != "" {
 		return Bundle{}, errors.New("render produces paused definitions; resolve activation and routing through deployment configuration")
 	}
 	seen := map[string]bool{}
